@@ -1,6 +1,6 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use std::env;
+use std::{env, fs::File, io::Write};
 use std::{thread, time};
 use sysinfo::System;
 // struct ProcInfo {
@@ -55,20 +55,60 @@ fn ptable() {
 
     processes.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap());
 
-    println!(
-        "{:<10} {:<45} {:<10} {:<15} {:<10}",
-        "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
-    );
-    println!("{}", "-".repeat(75));
-    for (id, process) in processes {
+    let args: Vec<String> = env::args().collect();
+    if args.len() >= 3 {
+        let file_path = &args[2];
+        if file_path.ends_with(".csv") {
+            let file = File::create(file_path);
+            match file {
+                // match is like a switch statement in c++
+                Ok(mut file) => {
+                    // Write CSV header
+                    writeln!(
+                        file,
+                        "{},{},{},{},{}",
+                        "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
+                    )
+                    .unwrap();
+
+                    for (id, process) in processes {
+                        writeln!(
+                            file,
+                            "{},{},{:.2},{},{}",
+                            id,
+                            process.name().to_string_lossy(),
+                            process.cpu_usage(),
+                            process.memory(),
+                            format!("{:?}", process.status())
+                        )
+                        .unwrap();
+                    }
+
+                    println!("Exported process table to: {}", file_path);
+                }
+                Err(e) => {
+                    eprintln!("Failed to create file {}: {}", file_path, e);
+                }
+            }
+        } else {
+            eprintln!("Error: Please provide a .csv file path.");
+        }
+    } else {
         println!(
-            "{:<10} {:<45} {:<10.2} {:<15} {:<10}",
-            id,
-            process.name().to_string_lossy(),
-            process.cpu_usage(),
-            process.memory(),
-            format!("{:?}", process.status())
+            "{:<10} {:<45} {:<10} {:<15} {:<10}",
+            "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
         );
+        println!("{}", "-".repeat(75));
+        for (id, process) in processes {
+            println!(
+                "{:<10} {:<45} {:<10.2} {:<15} {:<10}",
+                id,
+                process.name().to_string_lossy(),
+                process.cpu_usage(),
+                process.memory(),
+                format!("{:?}", process.status())
+            );
+        }
     }
 }
 
