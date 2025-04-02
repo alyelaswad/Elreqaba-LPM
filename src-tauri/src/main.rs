@@ -11,6 +11,35 @@ use sysinfo::System;
 //     status: String,
 // }
 
+fn kill_by_pid(pid: String) {
+    let mut system = System::new_all();
+
+    system.refresh_all();
+    thread::sleep(time::Duration::from_secs(1));
+    system.refresh_all();
+
+    let processes: Vec<_> = system
+        .processes()
+        .iter()
+        .map(|(id, process)| (id.to_string(), process))
+        .collect();
+    let found: bool = false;
+    for (id, process) in processes {
+        if id == pid {
+            process.kill();
+            println!(
+                " {} was killed, PID: {}",
+                process.name().to_string_lossy(),
+                id
+            );
+            break;
+        }
+    }
+    if !found {
+        println!("The Process was not found, recheck the PID");
+    }
+}
+
 fn ptable() {
     let mut system = System::new_all();
 
@@ -55,10 +84,15 @@ fn main() {
         eprintln!("Usage: cargo run -- <command>");
         return;
     }
+    if args[1].as_str() == "kill" && args.len() < 3 {
+        eprintln!("Usage: cargo run -- kill <pid>");
+        return;
+    }
 
     match args[1].as_str() {
         "get_os" => get_os(),
         "ptable" => ptable(),
+        "kill" => kill_by_pid(args[2].to_string()),
         _ => eprintln!("Unknown command: {}", args[1]),
     }
 }
