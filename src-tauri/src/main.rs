@@ -23,10 +23,11 @@ fn kill_by_pid(pid: String) {
         .iter()
         .map(|(id, process)| (id.to_string(), process))
         .collect();
-    let found: bool = false;
+    let mut found: bool = false;
     for (id, process) in processes {
         if id == pid {
             process.kill();
+            found = true;
             println!(
                 " {} was killed, PID: {}",
                 process.name().to_string_lossy(),
