@@ -1,5 +1,6 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use std::io;
 use std::{env, fs::File, io::Write};
 use std::{thread, time};
 use sysinfo::System;
@@ -41,7 +42,7 @@ fn kill_by_pid(pid: String) {
     }
 }
 
-fn ptable() {
+fn ptable(file_path: Option<&str>) {
     let mut system = System::new_all();
 
     system.refresh_all();
@@ -56,15 +57,10 @@ fn ptable() {
 
     processes.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap());
 
-    let args: Vec<String> = env::args().collect();
-    if args.len() >= 3 {
-        let file_path = &args[2];
-        if file_path.ends_with(".csv") {
-            let file = File::create(file_path);
-            match file {
-                // match is like a switch statement in c++
+    if let Some(path) = file_path {
+        if path.ends_with(".csv") {
+            match File::create(path) {
                 Ok(mut file) => {
-                    // Write CSV header
                     writeln!(
                         file,
                         "{},{},{},{},{}",
@@ -72,7 +68,7 @@ fn ptable() {
                     )
                     .unwrap();
 
-                    for (id, process) in processes {
+                    for (id, process) in &processes {
                         writeln!(
                             file,
                             "{},{},{:.2},{},{}",
@@ -85,10 +81,10 @@ fn ptable() {
                         .unwrap();
                     }
 
-                    println!("Exported process table to: {}", file_path);
+                    println!("Exported process table to: {}", path);
                 }
                 Err(e) => {
-                    eprintln!("Failed to create file {}: {}", file_path, e);
+                    eprintln!("Failed to create file {}: {}", path, e);
                 }
             }
         } else {
@@ -100,7 +96,7 @@ fn ptable() {
             "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
         );
         println!("{}", "-".repeat(75));
-        for (id, process) in processes {
+        for (id, process) in &processes {
             println!(
                 "{:<10} {:<45} {:<10.2} {:<15} {:<10}",
                 id,
@@ -119,21 +115,35 @@ fn get_os() {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    loop {
+        let mut command = String::new();
 
-    if args.len() < 2 {
-        eprintln!("Usage: cargo run -- <command>");
-        return;
-    }
-    if args[1].as_str() == "kill" && args.len() < 3 {
-        eprintln!("Usage: cargo run -- kill <pid>");
-        return;
-    }
+        println!("Enter command (or type 'exit' to quit):");
+        let _ = io::stdin().read_line(&mut command);
 
-    match args[1].as_str() {
-        "get_os" => get_os(),
-        "ptable" => ptable(),
-        "kill" => kill_by_pid(args[2].to_string()),
-        _ => eprintln!("Unknown command: {}", args[1]),
+        let command = command.trim();
+
+        if command.eq_ignore_ascii_case("exit") {
+            println!("Exited!");
+            break;
+        }
+        let parts: Vec<&str> = command.split_whitespace().collect();
+
+        match parts.get(0) {
+            Some(&"get_os") => get_os(),
+            Some(&"ptable") => {
+                let file_path = parts.get(1).map(|s| *s);
+                ptable(file_path);
+            }
+            Some(&"kill") => {
+                if let Some(&pid) = parts.get(1) {
+                    kill_by_pid(pid.to_string());
+                } else {
+                    eprintln!("Usage: kill <pid>");
+                }
+            }
+            Some(cmd) => eprintln!("Unknown command: {}", cmd),
+            None => continue,
+        }
     }
 }
