@@ -1,15 +1,10 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{env, fs::File, io::Write};
 use std::{thread, time};
+use cursive::Cursive;
+use cursive::CursiveExt;
+use cursive::views::{Dialog, TextView, LinearLayout, ScrollView, ListView};
 use sysinfo::System;
-// struct ProcInfo {
-//     id: String,
-//     name: String,
-//     cpu_usage: f32,
-//     memory: u64,
-//     status: String,
-// }
 
 fn kill_by_pid(pid: String) {
     let mut system = System::new_all();
@@ -62,9 +57,7 @@ fn ptable() {
         if file_path.ends_with(".csv") {
             let file = File::create(file_path);
             match file {
-                // match is like a switch statement in c++
                 Ok(mut file) => {
-                    // Write CSV header
                     writeln!(
                         file,
                         "{},{},{},{},{}",
@@ -95,27 +88,36 @@ fn ptable() {
             eprintln!("Error: Please provide a .csv file path.");
         }
     } else {
-        println!(
-            "{:<10} {:<45} {:<10} {:<15} {:<10}",
-            "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
-        );
-        println!("{}", "-".repeat(75));
-        for (id, process) in processes {
-            println!(
-                "{:<10} {:<45} {:<10.2} {:<15} {:<10}",
-                id,
-                process.name().to_string_lossy(),
-                process.cpu_usage(),
-                process.memory(),
-                format!("{:?}", process.status())
-            );
-        }
+        println!("[...]")
     }
 }
 
 fn get_os() {
     let os = env::consts::OS;
     println!("Your OS is: {}", os);
+}
+
+fn start_tui(processes: Vec<(String, String)>) {
+    let mut siv = Cursive::new();
+
+    // Create a ListView to display processes
+    let mut list_view = ListView::new();
+
+    for (pid, name) in processes {
+        list_view.add_child(
+            &format!("PID: {}", pid),
+            TextView::new(format!("Name: {}", name)),
+        );
+    }
+
+    siv.add_layer(
+        Dialog::new()
+            .title("System Processes")
+            .content(ScrollView::new(list_view))
+            .button("Quit", |s| s.quit()),
+    );
+
+    siv.run();
 }
 
 fn main() {
@@ -125,6 +127,7 @@ fn main() {
         eprintln!("Usage: cargo run -- <command>");
         return;
     }
+
     if args[1].as_str() == "kill" && args.len() < 3 {
         eprintln!("Usage: cargo run -- kill <pid>");
         return;
@@ -134,6 +137,20 @@ fn main() {
         "get_os" => get_os(),
         "ptable" => ptable(),
         "kill" => kill_by_pid(args[2].to_string()),
+        "tui" => {
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    // Collect process data: PID and Name
+    let processes: Vec<(String, String)> = system
+        .processes()
+        .iter()
+        .map(|(pid, process)| (pid.to_string(), process.name().to_string_lossy().into_owned()))
+        .collect();
+
+    start_tui(processes); // Pass the process list to the TUI function
+}
+
         _ => eprintln!("Unknown command: {}", args[1]),
     }
 }
