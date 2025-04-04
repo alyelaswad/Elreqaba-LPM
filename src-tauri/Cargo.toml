@@ -25,4 +25,5 @@ serde_json = "1"
 sysinfo = "0.32.0"
 nix = "0.23"
 cursive = { version = "0.20", features = ["toml"] }
+cursive_table_view = "0.14"
 
