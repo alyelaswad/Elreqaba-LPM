@@ -1,8 +1,10 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{env, fs::File, io::Write};
-use std::{thread, time};
-use sysinfo::System;
+use std::{thread, time,process::Command};
+use sysinfo::{System};  
+
+
 // struct ProcInfo {
 //     id: String,
 //     name: String,
@@ -10,7 +12,6 @@ use sysinfo::System;
 //     memory: u64,
 //     status: String,
 // }
-
 fn kill_by_pid(pid: String) {
     let mut system = System::new_all();
 
@@ -112,11 +113,112 @@ fn ptable() {
         }
     }
 }
+fn track_process(pid: String, path: String, duration_secs: u64) {
+    let mut system = System::new_all();
+    let mut file = match File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to create file {}: {}", path, e);
+            return;
+        }
+    };
+
+    writeln!(file, "Timestamp,CPU (%),Memory (KB)").unwrap();
+
+    let start_time = time::Instant::now();
+    let mut total_cpu: f32 = 0.0;
+    let mut total_memory: u64 = 0;
+    let mut count: u64 = 0;
+
+    while start_time.elapsed().as_secs() < duration_secs {
+        system.refresh_all();
+        if let Some(process) = system.processes().get(&pid.parse().unwrap()) {
+            total_cpu += process.cpu_usage();
+            total_memory += process.memory();
+            count += 1;
+
+            writeln!(
+                file,
+                "{}, {:.2}, {}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                process.cpu_usage(),
+                process.memory()
+            )
+            .unwrap();
+        } else {
+            println!("Process {} not found. Stopping monitoring.", pid);
+            break;
+        }
+        thread::sleep(time::Duration::from_secs(1));
+    }
+    if count > 0 {
+        let avg_cpu = total_cpu / count as f32;
+        let avg_memory = total_memory / count;
+
+        println!(
+            "Tracking complete. Data saved to {}",
+            path
+        );
+        println!("Average CPU Usage: {:.2}%", avg_cpu);
+        println!("Average Memory Usage: {} KB", avg_memory);
+    } else {
+        println!("No data collected. The process may not have been available.");
+    }
+}
 
 fn get_os() {
     let os = env::consts::OS;
     println!("Your OS is: {}", os);
 }
+fn get_process_command(pid: u32) -> String {
+  
+    let output = Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("command=")  
+        .output()
+        .expect("Failed to fetch process command");
+
+    if output.status.success() {
+        
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn restart_if_failed(mut pid: u32) {
+    loop {
+            println!("Process {} has stopped. Restarting...", pid);
+            let command = get_process_command(pid);
+            if !command.is_empty() {
+                let child = Command::new("xterm")
+                    .arg("-e")
+                    .arg(command.clone())
+                    .spawn();
+
+                match child {
+                    Ok(child_proc) => {
+                        pid = child_proc.id();
+                        println!("Restarted process with new PID: {}", pid);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to restart process: {}", e);
+                        break;
+                    }
+                }
+            } else {
+                eprintln!("Could not retrieve command for PID {}", pid);
+                break;
+            }
+            thread::sleep(time::Duration::from_secs(60));
+        }
+        thread::sleep(time::Duration::from_secs(60));
+    }
+
+
+
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -125,15 +227,60 @@ fn main() {
         eprintln!("Usage: cargo run -- <command>");
         return;
     }
-    if args[1].as_str() == "kill" && args.len() < 3 {
-        eprintln!("Usage: cargo run -- kill <pid>");
-        return;
-    }
 
     match args[1].as_str() {
         "get_os" => get_os(),
         "ptable" => ptable(),
-        "kill" => kill_by_pid(args[2].to_string()),
-        _ => eprintln!("Unknown command: {}", args[1]),
+        "kill" => {
+            if args.len() < 3 {
+                eprintln!("Usage: cargo run -- kill <pid>");
+                return;
+            }
+            kill_by_pid(args[2].to_string());
+        }
+        "track_process" => {
+            if args.len() < 5 {
+                eprintln!("Usage: cargo run -- track_process <pid> <output.csv> <duration_secs>");
+                return;
+            }
+            let pid = args[2].to_string();
+            let path = args[3].to_string();
+            let duration = args[4].parse::<u64>().unwrap_or(0);
+            if duration == 0 {
+                eprintln!("Invalid duration. Please enter a positive integer.");
+                return;
+            }
+            track_process(pid, path, duration);
+        }
+        "get_process_command" => {
+            if args.len() < 3 {
+                eprintln!("Usage: cargo run -- get_process_command <pid>");
+                return;
+            }
+            let pid = args[2].parse::<u32>().unwrap_or(0);
+            if pid == 0 {
+                eprintln!("Invalid PID. Please enter a valid process ID.");
+                return;
+            }
+            let command = get_process_command(pid);
+            if !command.is_empty() {
+                println!("Command for PID {}: {}", pid, command);
+            } else {
+                println!("Failed to retrieve command for PID {}", pid);
+            }
+        }
+        "restart_if_failed" => {
+            if args.len() < 3 {
+                eprintln!("Usage: cargo run -- restart_if_failed <pid>");
+                return;
+            }
+            let pid = args[2].parse::<u32>().unwrap_or(0);
+            if pid == 0 {
+                eprintln!("Invalid PID. Please enter a valid process ID.");
+                return;
+            }
+            restart_if_failed(pid);
+        }
+        _ => todo!(),  // Add a wildcard to catch any unhandled cases
     }
-}
+}    
