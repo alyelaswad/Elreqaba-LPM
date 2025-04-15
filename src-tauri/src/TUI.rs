@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::thread;
 use std::time::Duration;
 use lazy_static::lazy_static;
+use num_cpus;
 
 #[derive(Clone, Debug)]
 pub struct Process {
@@ -107,7 +108,7 @@ fn get_processes() -> Vec<Process> {
                 ppid,
                 user,
                 cpu: process.cpu_usage(),
-                mem: process.memory() as f32 / 1024.0, // Convert memory to MB
+                mem: process.memory() as f32 / 1024.0,
                 cmd: process.name().to_string_lossy().into_owned(),
                 start_time: process.start_time(),
                 process_state: process.status(),
@@ -117,6 +118,52 @@ fn get_processes() -> Vec<Process> {
 
     processes
 }
+fn get_system_info() -> String {
+    let mut system = SYSTEM.lock().unwrap();
+    system.refresh_all();
+
+    let cpu_frequency = if let Some(cpu) = system.cpus().first() {
+        format!("{} MHz", cpu.frequency())
+    } else {
+        "Unknown".to_string()
+    };
+    
+    let process_count = system.processes().len();
+    let uptime_secs = System::uptime(); 
+    
+    let uptime = format!(
+        "{}d {}h {}m {}s",
+        uptime_secs / 86400,
+        (uptime_secs % 86400) / 3600,
+        (uptime_secs % 3600) / 60,
+        uptime_secs % 60
+    );
+    
+    let p_core_count = num_cpus::get_physical();
+    let l_core_count = num_cpus::get();
+    let total_memory = system.total_memory() as f32 / 1024.0/ 1024.0/ 1024.0; // Convert to GB
+    let used_memory = system.used_memory() as f32 / 1024.0/ 1024.0/ 1024.0; // Convert to GB
+    let available_memory = system.available_memory() as f32 / 1024.0/ 1024.0/ 1024.0; // Convert to GB
+    
+    format!(
+        "CPU Frequency: {}\n\
+         Number of Processes: {}\n\
+         CPU Uptime: {}\n\
+         Number of Cores: {} physical / {} logical\n\
+         Memory Usage: {:.2} GB / {:.2} GB\n\
+         Available Memory: {:.2} GB",
+        cpu_frequency,
+        process_count,
+        uptime,
+        p_core_count,
+        l_core_count,
+        used_memory,
+        total_memory,
+        available_memory
+    )
+}
+
+
 
 fn custom_theme_from_cursive(_siv: &Cursive) -> cursive::theme::Theme {
     cursive::theme::Theme::default()
@@ -156,6 +203,15 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
         });
     });
 
+    siv.add_global_callback('s', |s| {
+        let system_info = get_system_info();
+        s.add_layer(
+            Dialog::around(TextView::new(system_info))
+                .title("System Information")
+                .button("Close", |s| { s.pop_layer(); })
+        );
+    });
+    
     let mut table = TableView::<Process, BasicColumn>::new()
         .on_sort(|_siv, _column, _order| {
         });
