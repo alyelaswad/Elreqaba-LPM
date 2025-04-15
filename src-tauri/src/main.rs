@@ -1,20 +1,12 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use std::io;
 use std::{env, fs::File, io::Write};
 use std::{thread, time};
 use sysinfo::System;
-// struct ProcInfo {
-//     id: String,
-//     name: String,
-//     cpu_usage: f32,
-//     memory: u64,
-//     status: String,
-// }
+mod TUI;
+use std::io;
+use users::get_user_by_uid;
 
 fn kill_by_pid(pid: String) {
     let mut system = System::new_all();
-
     system.refresh_all();
     thread::sleep(time::Duration::from_secs(1));
     system.refresh_all();
@@ -24,7 +16,8 @@ fn kill_by_pid(pid: String) {
         .iter()
         .map(|(id, process)| (id.to_string(), process))
         .collect();
-    let mut found: bool = false;
+
+    let mut found = false;
     for (id, process) in processes {
         if id == pid {
             process.kill();
@@ -64,7 +57,7 @@ fn ptable(file_path: Option<&str>) {
                     writeln!(
                         file,
                         "{},{},{},{},{}",
-                        "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
+                        "PID", "Process Name", "CPU (%)", "Memory (MB)", "Status"
                     )
                     .unwrap();
 
@@ -93,7 +86,7 @@ fn ptable(file_path: Option<&str>) {
     } else {
         println!(
             "{:<10} {:<45} {:<10} {:<15} {:<10}",
-            "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
+            "PID", "Process Name", "CPU (%)", "Memory (MB)", "Status"
         );
         println!("{}", "-".repeat(75));
         for (id, process) in &processes {
@@ -102,16 +95,192 @@ fn ptable(file_path: Option<&str>) {
                 id,
                 process.name().to_string_lossy(),
                 process.cpu_usage(),
-                process.memory(),
+                process.memory()/1024,
                 format!("{:?}", process.status())
             );
         }
     }
 }
+fn track_process(pid: String, path: String, duration_secs: u64) {
+    let mut system = System::new_all();
+    let mut file = match File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to create file {}: {}", path, e);
+            return;
+        }
+    };
+
+    writeln!(file, "Timestamp,CPU (%),Memory (KB)").unwrap();
+
+    let start_time = time::Instant::now();
+    let mut total_cpu: f32 = 0.0;
+    let mut total_memory: u64 = 0;
+    let mut count: u64 = 0;
+
+    while start_time.elapsed().as_secs() < duration_secs {
+        system.refresh_all();
+        if let Some(process) = system.processes().get(&pid.parse().unwrap()) {
+            total_cpu += process.cpu_usage();
+            total_memory += process.memory();
+            count += 1;
+
+            writeln!(
+                file,
+                "{}, {:.2}, {}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                process.cpu_usage(),
+                process.memory()
+            )
+            .unwrap();
+        } else {
+            println!("Process {} not found. Stopping monitoring.", pid);
+            break;
+        }
+        thread::sleep(time::Duration::from_secs(1));
+    }
+    if count > 0 {
+        let avg_cpu = total_cpu / count as f32;
+        let avg_memory = total_memory / count;
+
+        println!(
+            "Tracking complete. Data saved to {}",
+            path
+        );
+        println!("Average CPU Usage: {:.2}%", avg_cpu);
+        println!("Average Memory Usage: {} KB", avg_memory);
+    } else {
+        println!("No data collected. The process may not have been available.");
+    }
+}
+
+fn get_process_command(pid: u32) -> String {
+  
+    let output = Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("command=")  
+        .output()
+        .expect("Failed to fetch process command");
+
+    if output.status.success() {
+        
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn restart_if_failed(pid: u32, initial_pids: &Vec<(u32, String)>, current_pids: &Vec<(u32, String)>) {
+    if initial_pids.iter().any(|(initial_pid, _)| *initial_pid == pid) {
+        if !current_pids.iter().any(|(current_pid, _)| *current_pid == pid) {
+            println!("Process {} has stopped. Restarting...", pid);
+            let command = get_process_command(pid);
+            if !command.is_empty() {
+                let child = Command::new("xterm")
+                    .arg("-e")
+                    .arg(command.clone())
+                    .spawn();
+
+                match child {
+                    Ok(child_proc) => {
+                        println!("Restarted process with new PID: {}", child_proc.id());
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to restart process: {}", e);
+                    }
+                }
+            } else {
+                eprintln!("Could not retrieve command for PID {}", pid);
+            }
+        } else {
+            println!("Process {} is already running.", pid);
+        }
+    } else {
+        println!("PID {} not found in the initial table.", pid);
+    }thread::sleep(time::Duration::from_secs(10));
+}     
+fn get_pid_and_command() -> Vec<(u32, String)> {
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    let mut pid_and_commands = Vec::new();
+
+    for (pid, process) in system.processes() {
+        let cmd = process.cmd().iter()
+            .map(|arg| arg.to_string_lossy().into_owned()) 
+            .collect::<Vec<String>>()
+            .join(" ");
+        pid_and_commands.push((
+            pid.as_u32(), 
+            if cmd.is_empty() { "[no command]".to_string() } else { cmd }
+        ));
+    }
+
+    pid_and_commands
+}
+
+
 
 fn get_os() {
     let os = env::consts::OS;
     println!("Your OS is: {}", os);
+}
+
+fn tui() {
+    let mut system = sysinfo::System::new_all();
+    system.refresh_all();
+
+    thread::sleep(std::time::Duration::from_millis(500));
+    system.refresh_all();
+
+    let processes: Vec<TUI::Process> = system
+        .processes()
+        .iter()
+        .map(|(pid, process)| {
+            let ppid = process.parent().map(|p| p.as_u32());
+            
+            // Get user name if available
+            let user = match process.user_id() {
+                Some(uid) => {
+                    let uid_value = **uid;
+                    
+                    match get_user_by_uid(uid_value) {
+                        Some(user) => Some(user.name().to_string_lossy().into_owned()),
+                        None => Some(format!("uid:{}", uid_value))
+                    }
+                },
+                None => Some("unknown".to_string())
+            };
+            
+            TUI::Process {
+                pid: pid.as_u32(),
+                ppid,
+                user,
+                cpu: process.cpu_usage(),
+                mem: process.memory() as f32 / 1024.0, // Convert memory to MB
+                cmd: process.name().to_string_lossy().into_owned(),
+                start_time: process.start_time(),
+                process_state: process.status(),
+            }
+        })
+        .collect();
+
+    // Define which columns to display in the TUI
+    let columns_to_display = vec![
+        "PID".into(),
+        "PPID".into(),
+        "USER".into(),
+        "CPU".into(),
+        "MEM".into(),
+        "CMD".into(),
+        "START".into(),
+        "STATUS".into(), // Status column added
+    ];
+
+    // Display the TUI
+    TUI::display_tui(columns_to_display, processes);
 }
 
 fn main() {
@@ -142,6 +311,7 @@ fn main() {
                     eprintln!("Usage: kill <pid>");
                 }
             }
+            Some(&"tui") => tui(),
             Some(cmd) => eprintln!("Unknown command: {}", cmd),
             None => continue,
         }
