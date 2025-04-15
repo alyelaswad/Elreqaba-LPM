@@ -1,5 +1,6 @@
 use std::{env, fs::File, io::Write};
 use std::{thread, time};
+use std::process::Command;
 use sysinfo::System;
 mod TUI;
 use std::io;
@@ -284,10 +285,13 @@ fn tui() {
 }
 
 fn main() {
+    let initial_pids = get_pid_and_command();
+
     loop {
         let mut command = String::new();
 
-        println!("Enter command (or type 'exit' to quit):");
+        print!("Enter command (or type 'exit' to quit): ");
+        let _ = io::stdout().flush(); // Make sure prompt appears before input
         let _ = io::stdin().read_line(&mut command);
 
         let command = command.trim();
@@ -296,14 +300,17 @@ fn main() {
             println!("Exited!");
             break;
         }
+
         let parts: Vec<&str> = command.split_whitespace().collect();
 
         match parts.get(0) {
             Some(&"get_os") => get_os(),
+
             Some(&"ptable") => {
-                let file_path = parts.get(1).map(|s| *s);
+                let file_path = parts.get(1).copied();
                 ptable(file_path);
             }
+
             Some(&"kill") => {
                 if let Some(&pid) = parts.get(1) {
                     kill_by_pid(pid.to_string());
@@ -311,8 +318,58 @@ fn main() {
                     eprintln!("Usage: kill <pid>");
                 }
             }
+
+            Some(&"track_process") => {
+                if parts.len() < 4 {
+                    eprintln!("Usage: track_process <pid> <output.csv> <duration_secs>");
+                } else {
+                    let pid = parts[1].to_string();
+                    let path = parts[2].to_string();
+                    let duration = parts[3].parse::<u64>().unwrap_or(0);
+                    if duration == 0 {
+                        eprintln!("Invalid duration. Please enter a positive integer.");
+                    } else {
+                        track_process(pid, path, duration);
+                    }
+                }
+            }
+
+            Some(&"get_process_command") => {
+                if let Some(&pid_str) = parts.get(1) {
+                    let pid = pid_str.parse::<u32>().unwrap_or(0);
+                    if pid == 0 {
+                        eprintln!("Invalid PID. Please enter a valid process ID.");
+                    } else {
+                        let command = get_process_command(pid);
+                        if !command.is_empty() {
+                            println!("Command for PID {}: {}", pid, command);
+                        } else {
+                            println!("Failed to retrieve command for PID {}", pid);
+                        }
+                    }
+                } else {
+                    eprintln!("Usage: get_process_command <pid>");
+                }
+            }
+
+            Some(&"restart_if_failed") => {
+                if let Some(&pid_str) = parts.get(1) {
+                    let pid = pid_str.parse::<u32>().unwrap_or(0);
+                    if pid == 0 {
+                        eprintln!("Invalid PID. Please enter a valid process ID.");
+                    } else {
+                        let current_pids = get_pid_and_command();
+                        restart_if_failed(pid, &initial_pids, &current_pids);
+                    }
+                } else {
+                    eprintln!("Usage: restart_if_failed <pid>");
+                }
+            }
+
             Some(&"tui") => tui(),
+
             Some(cmd) => eprintln!("Unknown command: {}", cmd),
+
             None => continue,
         }
     }
