@@ -188,8 +188,9 @@ fn get_process_command(pid: u32) -> String {
     }
 }
 
-fn restart_if_failed(mut pid: u32) {
-    loop {
+fn restart_if_failed(pid: u32, initial_pids: &Vec<(u32, String)>, current_pids: &Vec<(u32, String)>) {
+    if initial_pids.iter().any(|(initial_pid, _)| *initial_pid == pid) {
+        if !current_pids.iter().any(|(current_pid, _)| *current_pid == pid) {
             println!("Process {} has stopped. Restarting...", pid);
             let command = get_process_command(pid);
             if !command.is_empty() {
@@ -200,28 +201,51 @@ fn restart_if_failed(mut pid: u32) {
 
                 match child {
                     Ok(child_proc) => {
-                        pid = child_proc.id();
-                        println!("Restarted process with new PID: {}", pid);
+                        println!("Restarted process with new PID: {}", child_proc.id());
                     }
                     Err(e) => {
                         eprintln!("Failed to restart process: {}", e);
-                        break;
                     }
                 }
             } else {
                 eprintln!("Could not retrieve command for PID {}", pid);
-                break;
             }
-            thread::sleep(time::Duration::from_secs(60));
+        } else {
+            println!("Process {} is already running.", pid);
         }
-        thread::sleep(time::Duration::from_secs(60));
+    } else {
+        println!("PID {} not found in the initial table.", pid);
+    }thread::sleep(time::Duration::from_secs(10));
+}     
+
+fn get_pid_and_command() -> Vec<(u32, String)> {
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    let mut pid_and_commands = Vec::new();
+
+    for (pid, process) in system.processes() {
+        let cmd = process.cmd().iter()
+            .map(|arg| arg.to_string_lossy().into_owned()) 
+            .collect::<Vec<String>>()
+            .join(" ");
+        pid_and_commands.push((
+            pid.as_u32(), 
+            if cmd.is_empty() { "[no command]".to_string() } else { cmd }
+        ));
     }
 
+    pid_and_commands
+}
 
 
 
 fn main() {
+    let initial_pids = get_pid_and_command();
     let args: Vec<String> = env::args().collect();
+    for (pid, command) in &initial_pids { 
+        println!("PID: {} - Command: {}", pid, command);
+    }
 
     if args.len() < 2 {
         eprintln!("Usage: cargo run -- <command>");
@@ -279,8 +303,9 @@ fn main() {
                 eprintln!("Invalid PID. Please enter a valid process ID.");
                 return;
             }
-            restart_if_failed(pid);
+            let current_pids = get_pid_and_command();
+            restart_if_failed(pid, &initial_pids, &current_pids);
         }
-        _ => todo!(),  // Add a wildcard to catch any unhandled cases
+        _ => todo!(), // Handle any other cases with a wildcard
     }
 }    
