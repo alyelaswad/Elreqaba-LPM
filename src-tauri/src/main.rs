@@ -1,20 +1,13 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{env, fs::File, io::Write};
-use std::{thread, time,process::Command};
-use sysinfo::{System};  
+use std::{thread, time};
+use std::process::Command;
+use sysinfo::System;
+mod TUI;
+use std::io;
+use users::get_user_by_uid;
 
-
-// struct ProcInfo {
-//     id: String,
-//     name: String,
-//     cpu_usage: f32,
-//     memory: u64,
-//     status: String,
-// }
 fn kill_by_pid(pid: String) {
     let mut system = System::new_all();
-
     system.refresh_all();
     thread::sleep(time::Duration::from_secs(1));
     system.refresh_all();
@@ -24,7 +17,8 @@ fn kill_by_pid(pid: String) {
         .iter()
         .map(|(id, process)| (id.to_string(), process))
         .collect();
-    let mut found: bool = false;
+
+    let mut found = false;
     for (id, process) in processes {
         if id == pid {
             process.kill();
@@ -42,7 +36,7 @@ fn kill_by_pid(pid: String) {
     }
 }
 
-fn ptable() {
+fn ptable(file_path: Option<&str>) {
     let mut system = System::new_all();
 
     system.refresh_all();
@@ -57,23 +51,18 @@ fn ptable() {
 
     processes.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap());
 
-    let args: Vec<String> = env::args().collect();
-    if args.len() >= 3 {
-        let file_path = &args[2];
-        if file_path.ends_with(".csv") {
-            let file = File::create(file_path);
-            match file {
-                // match is like a switch statement in c++
+    if let Some(path) = file_path {
+        if path.ends_with(".csv") {
+            match File::create(path) {
                 Ok(mut file) => {
-                    // Write CSV header
                     writeln!(
                         file,
                         "{},{},{},{},{}",
-                        "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
+                        "PID", "Process Name", "CPU (%)", "Memory (MB)", "Status"
                     )
                     .unwrap();
 
-                    for (id, process) in processes {
+                    for (id, process) in &processes {
                         writeln!(
                             file,
                             "{},{},{:.2},{},{}",
@@ -86,10 +75,10 @@ fn ptable() {
                         .unwrap();
                     }
 
-                    println!("Exported process table to: {}", file_path);
+                    println!("Exported process table to: {}", path);
                 }
                 Err(e) => {
-                    eprintln!("Failed to create file {}: {}", file_path, e);
+                    eprintln!("Failed to create file {}: {}", path, e);
                 }
             }
         } else {
@@ -98,16 +87,16 @@ fn ptable() {
     } else {
         println!(
             "{:<10} {:<45} {:<10} {:<15} {:<10}",
-            "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
+            "PID", "Process Name", "CPU (%)", "Memory (MB)", "Status"
         );
         println!("{}", "-".repeat(75));
-        for (id, process) in processes {
+        for (id, process) in &processes {
             println!(
                 "{:<10} {:<45} {:<10.2} {:<15} {:<10}",
                 id,
                 process.name().to_string_lossy(),
                 process.cpu_usage(),
-                process.memory(),
+                process.memory()/1024,
                 format!("{:?}", process.status())
             );
         }
@@ -166,10 +155,6 @@ fn track_process(pid: String, path: String, duration_secs: u64) {
     }
 }
 
-fn get_os() {
-    let os = env::consts::OS;
-    println!("Your OS is: {}", os);
-}
 fn get_process_command(pid: u32) -> String {
   
     let output = Command::new("ps")
@@ -217,7 +202,6 @@ fn restart_if_failed(pid: u32, initial_pids: &Vec<(u32, String)>, current_pids: 
         println!("PID {} not found in the initial table.", pid);
     }thread::sleep(time::Duration::from_secs(10));
 }     
-
 fn get_pid_and_command() -> Vec<(u32, String)> {
     let mut system = System::new_all();
     system.refresh_all();
@@ -240,72 +224,153 @@ fn get_pid_and_command() -> Vec<(u32, String)> {
 
 
 
+fn get_os() {
+    let os = env::consts::OS;
+    println!("Your OS is: {}", os);
+}
+
+fn tui() {
+    let mut system = sysinfo::System::new_all();
+    system.refresh_all();
+
+    thread::sleep(std::time::Duration::from_millis(500));
+    system.refresh_all();
+
+    let processes: Vec<TUI::Process> = system
+        .processes()
+        .iter()
+        .map(|(pid, process)| {
+            let ppid = process.parent().map(|p| p.as_u32());
+            
+            // Get user name if available
+            let user = match process.user_id() {
+                Some(uid) => {
+                    let uid_value = **uid;
+                    
+                    match get_user_by_uid(uid_value) {
+                        Some(user) => Some(user.name().to_string_lossy().into_owned()),
+                        None => Some(format!("uid:{}", uid_value))
+                    }
+                },
+                None => Some("unknown".to_string())
+            };
+            
+            TUI::Process {
+                pid: pid.as_u32(),
+                ppid,
+                user,
+                cpu: process.cpu_usage(),
+                mem: process.memory() as f32 / 1024.0, // Convert memory to MB
+                cmd: process.name().to_string_lossy().into_owned(),
+                start_time: process.start_time(),
+                process_state: process.status(),
+            }
+        })
+        .collect();
+
+    // Define which columns to display in the TUI
+    let columns_to_display = vec![
+        "PID".into(),
+        "PPID".into(),
+        "USER".into(),
+        "CPU".into(),
+        "MEM".into(),
+        "CMD".into(),
+        "START".into(),
+        "STATUS".into(), // Status column added
+    ];
+
+    // Display the TUI
+    TUI::display_tui(columns_to_display, processes);
+}
+
 fn main() {
     let initial_pids = get_pid_and_command();
-    let args: Vec<String> = env::args().collect();
-    for (pid, command) in &initial_pids { 
-        println!("PID: {} - Command: {}", pid, command);
-    }
 
-    if args.len() < 2 {
-        eprintln!("Usage: cargo run -- <command>");
-        return;
-    }
+    loop {
+        let mut command = String::new();
 
-    match args[1].as_str() {
-        "get_os" => get_os(),
-        "ptable" => ptable(),
-        "kill" => {
-            if args.len() < 3 {
-                eprintln!("Usage: cargo run -- kill <pid>");
-                return;
-            }
-            kill_by_pid(args[2].to_string());
+        print!("Enter command (or type 'exit' to quit): ");
+        let _ = io::stdout().flush(); // Make sure prompt appears before input
+        let _ = io::stdin().read_line(&mut command);
+
+        let command = command.trim();
+
+        if command.eq_ignore_ascii_case("exit") {
+            println!("Exited!");
+            break;
         }
-        "track_process" => {
-            if args.len() < 5 {
-                eprintln!("Usage: cargo run -- track_process <pid> <output.csv> <duration_secs>");
-                return;
+
+        let parts: Vec<&str> = command.split_whitespace().collect();
+
+        match parts.get(0) {
+            Some(&"get_os") => get_os(),
+
+            Some(&"ptable") => {
+                let file_path = parts.get(1).copied();
+                ptable(file_path);
             }
-            let pid = args[2].to_string();
-            let path = args[3].to_string();
-            let duration = args[4].parse::<u64>().unwrap_or(0);
-            if duration == 0 {
-                eprintln!("Invalid duration. Please enter a positive integer.");
-                return;
+
+            Some(&"kill") => {
+                if let Some(&pid) = parts.get(1) {
+                    kill_by_pid(pid.to_string());
+                } else {
+                    eprintln!("Usage: kill <pid>");
+                }
             }
-            track_process(pid, path, duration);
+
+            Some(&"track_process") => {
+                if parts.len() < 4 {
+                    eprintln!("Usage: track_process <pid> <output.csv> <duration_secs>");
+                } else {
+                    let pid = parts[1].to_string();
+                    let path = parts[2].to_string();
+                    let duration = parts[3].parse::<u64>().unwrap_or(0);
+                    if duration == 0 {
+                        eprintln!("Invalid duration. Please enter a positive integer.");
+                    } else {
+                        track_process(pid, path, duration);
+                    }
+                }
+            }
+
+            Some(&"get_process_command") => {
+                if let Some(&pid_str) = parts.get(1) {
+                    let pid = pid_str.parse::<u32>().unwrap_or(0);
+                    if pid == 0 {
+                        eprintln!("Invalid PID. Please enter a valid process ID.");
+                    } else {
+                        let command = get_process_command(pid);
+                        if !command.is_empty() {
+                            println!("Command for PID {}: {}", pid, command);
+                        } else {
+                            println!("Failed to retrieve command for PID {}", pid);
+                        }
+                    }
+                } else {
+                    eprintln!("Usage: get_process_command <pid>");
+                }
+            }
+
+            Some(&"restart_if_failed") => {
+                if let Some(&pid_str) = parts.get(1) {
+                    let pid = pid_str.parse::<u32>().unwrap_or(0);
+                    if pid == 0 {
+                        eprintln!("Invalid PID. Please enter a valid process ID.");
+                    } else {
+                        let current_pids = get_pid_and_command();
+                        restart_if_failed(pid, &initial_pids, &current_pids);
+                    }
+                } else {
+                    eprintln!("Usage: restart_if_failed <pid>");
+                }
+            }
+
+            Some(&"tui") => tui(),
+
+            Some(cmd) => eprintln!("Unknown command: {}", cmd),
+
+            None => continue,
         }
-        "get_process_command" => {
-            if args.len() < 3 {
-                eprintln!("Usage: cargo run -- get_process_command <pid>");
-                return;
-            }
-            let pid = args[2].parse::<u32>().unwrap_or(0);
-            if pid == 0 {
-                eprintln!("Invalid PID. Please enter a valid process ID.");
-                return;
-            }
-            let command = get_process_command(pid);
-            if !command.is_empty() {
-                println!("Command for PID {}: {}", pid, command);
-            } else {
-                println!("Failed to retrieve command for PID {}", pid);
-            }
-        }
-        "restart_if_failed" => {
-            if args.len() < 3 {
-                eprintln!("Usage: cargo run -- restart_if_failed <pid>");
-                return;
-            }
-            let pid = args[2].parse::<u32>().unwrap_or(0);
-            if pid == 0 {
-                eprintln!("Invalid PID. Please enter a valid process ID.");
-                return;
-            }
-            let current_pids = get_pid_and_command();
-            restart_if_failed(pid, &initial_pids, &current_pids);
-        }
-        _ => todo!(), // Handle any other cases with a wildcard
     }
-}    
+}
