@@ -172,12 +172,37 @@ fn get_process_command(pid: u32) -> String {
         String::new()
     }
 }
+fn get_pid_and_command() -> Vec<(u32, String)> {
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    let mut pid_and_commands = Vec::new();
+
+    for (pid, process) in system.processes() {
+        let cmd = process.cmd().iter()
+            .map(|arg| arg.to_string_lossy().into_owned()) 
+            .collect::<Vec<String>>()
+            .join(" ");
+        pid_and_commands.push((
+            pid.as_u32(), 
+            if cmd.is_empty() { "[no command]".to_string() } else { cmd }
+        ));
+    }
+
+    pid_and_commands
+}
+
 
 fn restart_if_failed(pid: u32, initial_pids: &Vec<(u32, String)>, current_pids: &Vec<(u32, String)>) {
     if initial_pids.iter().any(|(initial_pid, _)| *initial_pid == pid) {
         if !current_pids.iter().any(|(current_pid, _)| *current_pid == pid) {
             println!("Process {} has stopped. Restarting...", pid);
-            let command = get_process_command(pid);
+
+            let command = initial_pids.iter()
+                .find(|(initial_pid, _)| *initial_pid == pid)
+                .map(|(_, cmd)| cmd.clone())
+                .unwrap_or_else(|| String::new());
+
             if !command.is_empty() {
                 let child = Command::new("xterm")
                     .arg("-e")
@@ -200,26 +225,9 @@ fn restart_if_failed(pid: u32, initial_pids: &Vec<(u32, String)>, current_pids: 
         }
     } else {
         println!("PID {} not found in the initial table.", pid);
-    }thread::sleep(time::Duration::from_secs(10));
-}     
-fn get_pid_and_command() -> Vec<(u32, String)> {
-    let mut system = System::new_all();
-    system.refresh_all();
-
-    let mut pid_and_commands = Vec::new();
-
-    for (pid, process) in system.processes() {
-        let cmd = process.cmd().iter()
-            .map(|arg| arg.to_string_lossy().into_owned()) 
-            .collect::<Vec<String>>()
-            .join(" ");
-        pid_and_commands.push((
-            pid.as_u32(), 
-            if cmd.is_empty() { "[no command]".to_string() } else { cmd }
-        ));
     }
 
-    pid_and_commands
+    thread::sleep(time::Duration::from_secs(10));
 }
 
 
