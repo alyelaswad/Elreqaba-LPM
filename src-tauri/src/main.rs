@@ -1,9 +1,9 @@
 use std::{env, fs::File, io::Write};
 use std::{thread, time};
-use sysinfo::{System, Process};
+use sysinfo::System;
 mod TUI;
-use TUI::display_tui;
 use std::io;
+use users::get_user_by_uid;
 
 fn kill_by_pid(pid: String) {
     let mut system = System::new_all();
@@ -57,7 +57,7 @@ fn ptable(file_path: Option<&str>) {
                     writeln!(
                         file,
                         "{},{},{},{},{}",
-                        "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
+                        "PID", "Process Name", "CPU (%)", "Memory (MB)", "Status"
                     )
                     .unwrap();
 
@@ -86,7 +86,7 @@ fn ptable(file_path: Option<&str>) {
     } else {
         println!(
             "{:<10} {:<45} {:<10} {:<15} {:<10}",
-            "PID", "Process Name", "CPU (%)", "Memory (KB)", "Status"
+            "PID", "Process Name", "CPU (%)", "Memory (MB)", "Status"
         );
         println!("{}", "-".repeat(75));
         for (id, process) in &processes {
@@ -95,13 +95,12 @@ fn ptable(file_path: Option<&str>) {
                 id,
                 process.name().to_string_lossy(),
                 process.cpu_usage(),
-                process.memory(),
+                process.memory()/1024,
                 format!("{:?}", process.status())
             );
         }
     }
 }
-
 
 fn get_os() {
     let os = env::consts::OS;
@@ -112,25 +111,56 @@ fn tui() {
     let mut system = sysinfo::System::new_all();
     system.refresh_all();
 
-    // Convert sysinfo::Process to TUI::Process
+    thread::sleep(std::time::Duration::from_millis(500));
+    system.refresh_all();
+
     let processes: Vec<TUI::Process> = system
         .processes()
         .iter()
-        .map(|(_, process)| TUI::Process {
-            pid: process.pid().as_u32(),
-            cpu: process.cpu_usage(),
-            mem: process.memory() as f32 / 1024.0, // Convert memory to MB
-            cmd: process.name().to_string_lossy().into_owned(),
+        .map(|(pid, process)| {
+            let ppid = process.parent().map(|p| p.as_u32());
+            
+            // Get user name if available
+            let user = match process.user_id() {
+                Some(uid) => {
+                    let uid_value = **uid;
+                    
+                    match get_user_by_uid(uid_value) {
+                        Some(user) => Some(user.name().to_string_lossy().into_owned()),
+                        None => Some(format!("uid:{}", uid_value))
+                    }
+                },
+                None => Some("unknown".to_string())
+            };
+            
+            TUI::Process {
+                pid: pid.as_u32(),
+                ppid,
+                user,
+                cpu: process.cpu_usage(),
+                mem: process.memory() as f32 / 1024.0, // Convert memory to MB
+                cmd: process.name().to_string_lossy().into_owned(),
+                start_time: process.start_time(),
+                process_state: process.status(),
+            }
         })
         .collect();
 
     // Define which columns to display in the TUI
-    let columns_to_display = vec!["PID".into(), "CPU".into(), "MEM".into(), "CMD".into()];
+    let columns_to_display = vec![
+        "PID".into(),
+        "PPID".into(),
+        "USER".into(),
+        "CPU".into(),
+        "MEM".into(),
+        "CMD".into(),
+        "START".into(),
+        "STATUS".into(), // Status column added
+    ];
 
     // Display the TUI
     TUI::display_tui(columns_to_display, processes);
 }
-
 
 fn main() {
     loop {

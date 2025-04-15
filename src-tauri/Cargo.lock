@@ -506,8 +506,10 @@ checksum = "1a7964611d71df112cb1730f2ee67324fcf4d0fc6606acbbe9bfe06df124637c"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -3002,8 +3004,10 @@ dependencies = [
 name = "procmanager"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cursive",
  "cursive_table_view",
+ "lazy_static",
  "nix 0.23.2",
  "serde",
  "serde_json",
@@ -3011,6 +3015,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "users",
 ]
 
 [[package]]
@@ -4462,6 +4467,16 @@ dependencies = [
  "serde",
  "unic-ucd-ident",
  "url",
+]
+
+[[package]]
+name = "users"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24cc0f6d6f267b73e5a2cadf007ba8f9bc39c6a6f9666f8cf25ea809a153b032"
+dependencies = [
+ "libc",
+ "log",
 ]
 
 [[package]]

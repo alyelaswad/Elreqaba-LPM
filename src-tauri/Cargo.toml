@@ -26,4 +26,6 @@ sysinfo = "0.32.0"
 nix = "0.23"
 cursive = { version = "0.20", features = ["toml"] }
 cursive_table_view = "0.14"
-
+chrono = "0.4"
+users = "0.11"
+lazy_static="1.4.0"
