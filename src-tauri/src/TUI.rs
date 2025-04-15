@@ -7,7 +7,7 @@ use cursive::view::Nameable;
 use cursive_table_view::{TableView, TableViewItem};
 use sysinfo::{ProcessStatus, System};
 use std::cmp::Ordering;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::thread;
 use std::time::Duration;
@@ -44,7 +44,7 @@ impl TableViewItem<BasicColumn> for Process {
             BasicColumn::PPID => self.ppid.map_or("N/A".to_string(), |ppid| ppid.to_string()),
             BasicColumn::USER => self.user.clone().unwrap_or_else(|| "N/A".to_string()),
             BasicColumn::CPU => format!("{:.2}", self.cpu),
-            BasicColumn::MEM => format!("{:.2}", self.mem),
+            BasicColumn::MEM => format!("{:.2}", self.mem/1024.0),
             BasicColumn::CMD => self.cmd.clone(),
             BasicColumn::START => {
                 // Convert start_time to a readable format
@@ -70,23 +70,17 @@ impl TableViewItem<BasicColumn> for Process {
     }
 }
 
-pub static TUI_RUNNING: AtomicBool = AtomicBool::new(true);
-pub static UPDATES_PAUSED: AtomicBool = AtomicBool::new(false);
+// Atomic flags as static variables
+static TUI_RUNNING: AtomicBool = AtomicBool::new(true);
+static UPDATES_PAUSED: AtomicBool = AtomicBool::new(false);
 
-// Create a singleton System instance to maintain state between calls
+// Create a singleton for the System
 lazy_static! {
     static ref SYSTEM: Mutex<System> = Mutex::new(System::new_all());
-    static ref INIT: Once = Once::new();
 }
 
 fn get_processes() -> Vec<Process> {
-    INIT.call_once(|| {
-        let mut system = SYSTEM.lock().unwrap();
-        system.refresh_all();
-        drop(system);
-        thread::sleep(Duration::from_millis(250));
-    });
-    
+    // Always refresh the system data
     let mut system = SYSTEM.lock().unwrap();
     system.refresh_all();
 
@@ -129,14 +123,19 @@ fn custom_theme_from_cursive(_siv: &Cursive) -> cursive::theme::Theme {
 }
 
 pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Process>) {
-    // Initialize the system and get accurate initial process data
-    // This ensures we have a baseline for CPU usage calculations
+    // Reset state for this TUI session
+    TUI_RUNNING.store(true, AtomicOrdering::SeqCst);
+    UPDATES_PAUSED.store(false, AtomicOrdering::SeqCst);
+    
+    // Force system refresh
+    {
+        let mut system = SYSTEM.lock().unwrap();
+        system.refresh_all();
+        thread::sleep(Duration::from_millis(250)); // Give time for system data to initialize
+    }
+    
     let initial_accurate_processes = get_processes();
-    
-    // Create a shared state for processes that can be accessed by multiple threads
     let processes = Arc::new(Mutex::new(initial_accurate_processes));
-    
-    // Set up TUI
     let mut siv = Cursive::default();
     let theme = custom_theme_from_cursive(&siv);
     siv.set_theme(theme);
@@ -145,14 +144,12 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
         TUI_RUNNING.store(false, AtomicOrdering::SeqCst);
         s.quit();
     });
-
-    // Add toggle for pausing/resuming updates
+    
+    // Toggle updates
     siv.add_global_callback('u', |s| {
         let current_paused = UPDATES_PAUSED.load(AtomicOrdering::SeqCst);
         let new_state = !current_paused;
         UPDATES_PAUSED.store(new_state, AtomicOrdering::SeqCst);
-        
-        // Update the title to show the current state
         let status = if new_state { "PAUSED" } else { "Running" };
         s.call_on_name("main_dialog", |view: &mut Dialog| {
             view.set_title(format!("Processes ({}) - Press 'u' to toggle updates, 'q' to quit", status));
@@ -161,7 +158,6 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
 
     let mut table = TableView::<Process, BasicColumn>::new()
         .on_sort(|_siv, _column, _order| {
-            // Sorting is handled automatically by cursive_table_view
         });
 
     for col_name in columns_to_display {
@@ -228,7 +224,6 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
     });
 
     let processes_clone = Arc::clone(&processes);
-    
     let sink = siv.cb_sink().clone();
     
     thread::spawn(move || {
@@ -250,5 +245,9 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
             }
         }
     });
+    
     siv.run();
+    
+    TUI_RUNNING.store(false, AtomicOrdering::SeqCst);
+    thread::sleep(Duration::from_millis(100));
 }
