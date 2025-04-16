@@ -1,0 +1,23 @@
+{
+  "name": "elreqaba-lpm",
+  "version": "1.0.0",
+  "description": "This template should help get you started developing with Tauri in vanilla HTML, CSS and Javascript.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://OmarGanna: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@github.com/alyelaswad/Elreqaba-LPM.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/alyelaswad/Elreqaba-LPM/issues"
+  },
+  "homepage": "https://github.com/alyelaswad/Elreqaba-LPM#readme",
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

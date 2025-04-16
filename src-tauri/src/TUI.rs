@@ -13,6 +13,8 @@ use std::thread;
 use std::time::Duration;
 use lazy_static::lazy_static;
 use num_cpus;
+use sysinfo::{Pid, Signal};
+
 
 #[derive(Clone, Debug)]
 pub struct Process {
@@ -80,6 +82,43 @@ lazy_static! {
     static ref SYSTEM: Mutex<System> = Mutex::new(System::new_all());
 }
 
+
+fn act_on_selected_process<F>(siv: &mut Cursive, action: F, action_name: &str)
+where
+    F: Fn(&sysinfo::Process) -> bool,
+{
+    let table_view = siv.find_name::<TableView<Process, BasicColumn>>("table");
+    if let Some(table) = table_view {
+        if let Some(selected_row) = table.row().and_then(|row| row.checked_sub(0)) {
+            if let Some(process) = table.borrow_item(selected_row) {
+                let pid = process.pid;
+                let mut system = SYSTEM.lock().unwrap();
+                
+                // Refresh specific process
+                system.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::Some(&[Pid::from(pid as usize)]),
+                    true,
+                    sysinfo::ProcessRefreshKind::everything(),
+                );
+
+                if let Some(sys_proc) = system.process(Pid::from(pid as usize)) {
+                    let result = action(sys_proc);
+                    let msg = if result {
+                        format!("{} signal sent to PID {}", action_name, pid)
+                    } else {
+                        format!("Failed to send {} signal to PID {}", action_name, pid)
+                    };
+                    siv.add_layer(Dialog::info(msg));
+                } else {
+                    siv.add_layer(Dialog::info("Process not found."));
+                }
+            }
+        }
+    }
+}
+
+
+
 fn get_processes() -> Vec<Process> {
     // Always refresh the system data
     let mut system = SYSTEM.lock().unwrap();
@@ -118,6 +157,7 @@ fn get_processes() -> Vec<Process> {
 
     processes
 }
+
 fn get_system_info() -> String {
     let mut system = SYSTEM.lock().unwrap();
     system.refresh_all();
@@ -141,9 +181,9 @@ fn get_system_info() -> String {
     
     let p_core_count = num_cpus::get_physical();
     let l_core_count = num_cpus::get();
-    let total_memory = system.total_memory() as f32 / 1024.0/ 1024.0/ 1024.0; // Convert to GB
-    let used_memory = system.used_memory() as f32 / 1024.0/ 1024.0/ 1024.0; // Convert to GB
-    let available_memory = system.available_memory() as f32 / 1024.0/ 1024.0/ 1024.0; // Convert to GB
+    let total_memory = system.total_memory() as f32 / 1024.0/ 1024.0/ 1024.0;
+    let used_memory = system.used_memory() as f32 / 1024.0/ 1024.0/ 1024.0;
+    let available_memory = system.available_memory() as f32 / 1024.0/ 1024.0/ 1024.0;
     
     format!(
         "CPU Frequency: {}\n\
@@ -163,22 +203,18 @@ fn get_system_info() -> String {
     )
 }
 
-
-
 fn custom_theme_from_cursive(_siv: &Cursive) -> cursive::theme::Theme {
     cursive::theme::Theme::default()
 }
 
 pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Process>) {
-    // Reset state for this TUI session
     TUI_RUNNING.store(true, AtomicOrdering::SeqCst);
     UPDATES_PAUSED.store(false, AtomicOrdering::SeqCst);
     
-    // Force system refresh
     {
         let mut system = SYSTEM.lock().unwrap();
         system.refresh_all();
-        thread::sleep(Duration::from_millis(250)); // Give time for system data to initialize
+        thread::sleep(Duration::from_millis(250));
     }
     
     let initial_accurate_processes = get_processes();
@@ -209,6 +245,9 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
             Dialog::around(TextView::new(system_info))
                 .title("System Information")
                 .button("Close", |s| { s.pop_layer(); })
+                .padding_lrtb(2, 2, 1, 1) 
+                .fixed_width(80)    
+                .fixed_height(20)         
         );
     });
     
@@ -262,6 +301,8 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
     siv.add_layer(
         Dialog::around(scrollable_table)
             .title("Processes (Running) - Press 'u' to toggle updates, 'q' to quit")
+            .button("Quit", |s| s.quit())
+            .h_align(HAlign::Right) // Aligns the button row to the right
             .with_name("main_dialog")
     );
 
@@ -272,12 +313,31 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
                  - Click column headers to sort\n\
                  - 'u' to toggle updates (pause/resume)\n\
                  - 'q' to quit\n\
+                 - 's' to show system information\n\
+                 - 'K' to kill the selected process\n\
+                 - 'P' to pause the selected process\n\
+                 - 'R' to resume the selected process\n\
                  - 'h' for help"
             ))
             .title("Help")
             .button("Close", |s| { s.pop_layer(); })
         );
     });
+    // Kill process
+siv.add_global_callback('k', |s| {
+    act_on_selected_process(s, |proc| proc.kill(), "Kill");
+});
+
+// Pause process (SIGSTOP)
+siv.add_global_callback('p', |s| {
+    act_on_selected_process(s, |proc| proc.kill_with(Signal::Stop).unwrap_or(false), "Pause");
+});
+
+// Resume process (SIGCONT)
+siv.add_global_callback('r', |s| {
+    act_on_selected_process(s, |proc| proc.kill_with(Signal::Continue).unwrap_or(false), "Resume");
+});
+
 
     let processes_clone = Arc::clone(&processes);
     let sink = siv.cb_sink().clone();
