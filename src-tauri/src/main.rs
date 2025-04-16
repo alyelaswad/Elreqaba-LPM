@@ -5,7 +5,8 @@ use sysinfo::System;
 mod TUI;
 use std::io;
 use users::get_user_by_uid;
-
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 fn kill_by_pid(pid: String) {
     let mut system = System::new_all();
     system.refresh_all();
@@ -35,7 +36,6 @@ fn kill_by_pid(pid: String) {
         println!("The Process was not found, recheck the PID");
     }
 }
-
 fn ptable(file_path: Option<&str>) {
     let mut system = System::new_all();
 
@@ -154,7 +154,6 @@ fn track_process(pid: String, path: String, duration_secs: u64) {
         println!("No data collected. The process may not have been available.");
     }
 }
-
 fn get_process_command(pid: u32) -> String {
   
     let output = Command::new("ps")
@@ -191,8 +190,6 @@ fn get_pid_and_command() -> Vec<(u32, String)> {
 
     pid_and_commands
 }
-
-
 fn restart_if_failed(pid: u32, initial_pids: &Vec<(u32, String)>, current_pids: &Vec<(u32, String)>) {
     if initial_pids.iter().any(|(initial_pid, _)| *initial_pid == pid) {
         if !current_pids.iter().any(|(current_pid, _)| *current_pid == pid) {
@@ -229,14 +226,16 @@ fn restart_if_failed(pid: u32, initial_pids: &Vec<(u32, String)>, current_pids: 
 
     thread::sleep(time::Duration::from_secs(10));
 }
-
-
-
+fn pause_process(pid: u32) -> bool {
+    kill(Pid::from_raw(pid as i32), Signal::SIGSTOP).is_ok()
+}
+fn resume_process(pid: u32) -> bool {
+    kill(Pid::from_raw(pid as i32), Signal::SIGCONT).is_ok()
+}
 fn get_os() {
     let os = env::consts::OS;
     println!("Your OS is: {}", os);
 }
-
 fn tui() {
     let mut system = sysinfo::System::new_all();
     system.refresh_all();
@@ -249,8 +248,6 @@ fn tui() {
         .iter()
         .map(|(pid, process)| {
             let ppid = process.parent().map(|p| p.as_u32());
-            
-            // Get user name if available
             let user = match process.user_id() {
                 Some(uid) => {
                     let uid_value = **uid;
@@ -291,7 +288,24 @@ fn tui() {
     // Display the TUI
     TUI::display_tui(columns_to_display, processes);
 }
+fn change_niceness(pid: u32, niceness: i32) {
+    let output = Command::new("renice")
+        .arg(niceness.to_string())
+        .arg("-p")
+        .arg(pid.to_string())
+        .output()
+        .expect("Failed to change niceness");
 
+    if output.status.success() {
+        println!("Changed niceness for PID {} to {}", pid, niceness);
+    } else {
+        eprintln!(
+            "Failed to change niceness for PID {}: {}",
+            pid,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
 fn main() {
     let initial_pids = get_pid_and_command();
 
@@ -318,7 +332,19 @@ fn main() {
                 let file_path = parts.get(1).copied();
                 ptable(file_path);
             }
-
+            Some(&"change_nice") => {
+                if parts.len() < 3 {
+                    eprintln!("Usage: change_nice <pid> <niceness>");
+                } else {
+                    let pid = parts[1].parse::<u32>().unwrap_or(0);
+                    let niceness = parts[2].parse::<i32>().unwrap_or(0);
+                    if pid == 0 {
+                        eprintln!("Invalid PID.");
+                    } else {
+                        change_niceness(pid, niceness);
+                    }
+                }
+            }
             Some(&"kill") => {
                 if let Some(&pid) = parts.get(1) {
                     kill_by_pid(pid.to_string());
@@ -326,7 +352,37 @@ fn main() {
                     eprintln!("Usage: kill <pid>");
                 }
             }
+            Some(&"pause") => {
+                if let Some(&pid_str) = parts.get(1) {
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        if pause_process(pid) {
+                            println!("Paused process with PID {}", pid);
+                        } else {
+                            eprintln!("Failed to pause process with PID {}", pid);
+                        }
+                    } else {
+                        eprintln!("Invalid PID.");
+                    }
+                } else {
+                    eprintln!("Usage: pause <pid>");
+                }
+            }
 
+            Some(&"resume") => {
+                if let Some(&pid_str) = parts.get(1) {
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        if resume_process(pid) {
+                            println!("Resumed process with PID {}", pid);
+                        } else {
+                            eprintln!("Failed to resume process with PID {}", pid);
+                        }
+                    } else {
+                        eprintln!("Invalid PID.");
+                    }
+                } else {
+                    eprintln!("Usage: resume <pid>");
+                }
+            }
             Some(&"track_process") => {
                 if parts.len() < 4 {
                     eprintln!("Usage: track_process <pid> <output.csv> <duration_secs>");

@@ -1,0 +1,15 @@
+{
+  "name": "elreqaba-lpm",
+  "version": "1.0.0",
+  "description": "This template should help get you started developing with Tauri in vanilla HTML, CSS and Javascript.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+  }
+}
