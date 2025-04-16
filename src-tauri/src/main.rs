@@ -7,6 +7,70 @@ use std::io;
 use users::get_user_by_uid;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
+use chrono::{Local}; 
+use sysinfo::{Pid};
+
+fn log_by_pid(pid_str: String) {
+    let mut system = System::new_all();
+    system.refresh_all();
+    thread::sleep(time::Duration::from_secs(1));
+    system.refresh_all();
+
+    let pid = match pid_str.parse::<u32>() {
+        Ok(pid) => Pid::from(pid as usize),
+        Err(_) => {
+            println!("Invalid PID string: {}", pid_str);
+            return;
+        }
+    };
+
+    let processes: Vec<_> = system
+        .processes()
+        .iter()
+        .map(|(id, process)| (id.to_string(), process))
+        .collect();
+
+    let mut found = false;
+    let mut log = vec![];
+
+    for (id, process) in processes {
+        if id == pid_str {
+            found = true;
+            let creation_time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            log.push(format!("[{}] Process {} created", creation_time, pid));
+
+            let mut last_state = process.status().to_string();
+
+            loop {
+                thread::sleep(time::Duration::from_secs(1));
+                system.refresh_all(); 
+                if let Some(process) = system.process(pid) {
+                    let current_state = process.status().to_string();
+
+                    if current_state != last_state {
+                        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                        log.push(format!("[{}] Status of Process {} changed to: {}", timestamp, pid, current_state));
+                        last_state = current_state;
+                        break;
+                    }
+                } else {
+                    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    log.push(format!("[{}] Process {} terminated", timestamp, pid));
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    if !found {
+        println!("The Process was not found, recheck the PID");
+    } else {
+        for entry in log {
+            println!("{}", entry);
+        }
+    }
+}
 fn kill_by_pid(pid: String) {
     let mut system = System::new_all();
     system.refresh_all();
@@ -350,6 +414,13 @@ fn main() {
                     kill_by_pid(pid.to_string());
                 } else {
                     eprintln!("Usage: kill <pid>");
+                }
+            }
+            Some(&"log") => {
+                if let Some(&pid) = parts.get(1) {
+                    log_by_pid(pid.to_string());
+                } else {
+                    eprintln!("Usage: log <pid>");
                 }
             }
             Some(&"pause") => {
