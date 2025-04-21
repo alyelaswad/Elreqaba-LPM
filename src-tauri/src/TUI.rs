@@ -15,6 +15,9 @@ use lazy_static::lazy_static;
 use num_cpus;
 use sysinfo::{Pid, Signal};
 use cursive::backend::Backend;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
+use std::path::Path;
 
 
 #[derive(Clone, Debug)]
@@ -83,28 +86,46 @@ lazy_static! {
     static ref SYSTEM: Mutex<System> = Mutex::new(System::new_all());
 }
 
+#[derive(Clone)]
+struct SysStats {
+    cpu_freq: u64,
+    cpu_name: String,
+    cpu_temp: f32,
+    cpu_cores_num: usize,
+    uptime: u64,
+    mem_total: u64,
+    user_proc_count: usize,
+}
+
+impl Default for SysStats {
+    fn default() -> Self {
+        SysStats {
+            cpu_freq: 0,
+            cpu_name: String::new(),
+            cpu_temp: 0.0,
+            cpu_cores_num: num_cpus::get(),
+            uptime: 0,
+            mem_total: 0,
+            user_proc_count: 0,
+        }
+    }
+}
 
 fn act_on_selected_process<F>(siv: &mut Cursive, action: F, action_name: &str)
 where
     F: Fn(&sysinfo::Process) -> bool + Send + 'static + Clone,
 {
-    let table_view = siv.find_name::<TableView<Process, BasicColumn>>("table");
-    if let Some(table) = table_view {
-        // Get the currently selected row index using the same method as the table's on_submit
+    if let Some(table) = siv.find_name::<TableView<Process, BasicColumn>>("table") {
         if let Some(selected_row) = table.item() {
-            // Get the process at the selected row index
             if let Some(process) = table.borrow_item(selected_row) {
                 let pid = process.pid;
                 let cmd = process.cmd.clone();
                 let action_name = action_name.to_string();
                 
-                // Show a confirmation dialog first
                 siv.add_layer(
                     Dialog::text(format!("Are you sure you want to {} process {} ({})?", action_name, pid, cmd))
                         .button("Yes", move |s| {
                             s.pop_layer();
-                            
-                            // Perform the action in a separate thread to avoid freezing
                             let sink = s.cb_sink().clone();
                             let action_clone = action.clone();
                             let cmd_clone = cmd.clone();
@@ -112,8 +133,6 @@ where
                             
                             thread::spawn(move || {
                                 let mut system = SYSTEM.lock().unwrap();
-                                
-                                // Refresh specific process
                                 system.refresh_processes_specifics(
                                     sysinfo::ProcessesToUpdate::Some(&[Pid::from(pid as usize)]),
                                     true,
@@ -128,41 +147,26 @@ where
                                         format!("Failed to send {} signal to PID {} ({})", action_name_clone, pid, cmd_clone)
                                     };
                                     
-                                    // Add a small delay to ensure the process has been killed
                                     thread::sleep(Duration::from_millis(100));
-                                    
-                                    // Force a refresh of the system state
                                     system.refresh_all();
-                                    
-                                    // Drop the system lock
                                     drop(system);
 
-                                    // Show result in the UI
                                     let sink_clone = sink.clone();
                                     sink.send(Box::new(move |s| {
-                                        s.add_layer(
-                                            Dialog::info(msg)
-                                                .button("OK", |s| { s.pop_layer(); })
-                                        );
+                                        s.add_layer(Dialog::info(msg).button("OK", |s| { s.pop_layer(); }));
                                         
-                                        // Schedule table updates
-                                        for _ in 0..3 {
-                                            let sink_clone = sink_clone.clone();
-                                            thread::spawn(move || {
-                                                thread::sleep(Duration::from_millis(200));
-                                                sink_clone.send(Box::new(move |s| {
-                                                    if let Some(mut table_view) = s.find_name::<TableView<Process, BasicColumn>>("table") {
-                                                        let processes = get_processes();
-                                                        table_view.set_items(processes);
-                                                    }
-                                                })).ok();
-                                            });
-                                        }
+                                        thread::spawn(move || {
+                                            thread::sleep(Duration::from_millis(200));
+                                            sink_clone.send(Box::new(move |s| {
+                                                if let Some(mut table_view) = s.find_name::<TableView<Process, BasicColumn>>("table") {
+                                                    table_view.set_items(get_processes());
+                                                }
+                                            })).ok();
+                                        });
                                     })).ok();
                                 } else {
-                                    let msg = format!("Process {} ({}) not found.", pid, cmd_clone);
                                     sink.send(Box::new(move |s| {
-                                        s.add_layer(Dialog::info(msg));
+                                        s.add_layer(Dialog::info(format!("Process {} ({}) not found.", pid, cmd_clone)));
                                     })).ok();
                                 }
                             });
@@ -217,48 +221,108 @@ fn get_processes() -> Vec<Process> {
     processes
 }
 
+// Add this function to get real-time CPU frequency
+fn get_cpu_frequencies() -> Vec<f64> {
+    let mut frequencies = Vec::new();
+    let cpu_count = num_cpus::get();
+
+    for cpu_id in 0..cpu_count {
+        let freq_file = format!("/sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq", cpu_id);
+        if let Ok(file) = File::open(&freq_file) {
+            let reader = BufReader::new(file);
+            if let Some(Ok(line)) = reader.lines().next() {
+                if let Ok(freq) = line.trim().parse::<u64>() {
+                    // Convert KHz to GHz
+                    frequencies.push(freq as f64 / 1_000_000.0);
+                }
+            }
+        }
+    }
+
+    // Fallback to /proc/cpuinfo if cpufreq is not available
+    if frequencies.is_empty() {
+        if let Ok(file) = File::open("/proc/cpuinfo") {
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    if line.starts_with("cpu MHz") {
+                        if let Some(freq_str) = line.split(':').nth(1) {
+                            if let Ok(freq) = freq_str.trim().parse::<f64>() {
+                                frequencies.push(freq / 1000.0); // Convert MHz to GHz
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    frequencies
+}
+
 fn get_system_info() -> String {
     let mut system = SYSTEM.lock().unwrap();
     system.refresh_all();
 
-    let cpu_frequency = if let Some(cpu) = system.cpus().first() {
-        format!("{} MHz", cpu.frequency())
-    } else {
-        "Unknown".to_string()
-    };
-    
-    let process_count = system.processes().len();
-    let uptime_secs = System::uptime(); 
-    
-    let uptime = format!(
-        "{}d {}h {}m {}s",
-        uptime_secs / 86400,
-        (uptime_secs % 86400) / 3600,
-        (uptime_secs % 3600) / 60,
-        uptime_secs % 60
-    );
-    
-    let p_core_count = num_cpus::get_physical();
-    let l_core_count = num_cpus::get();
+    // Get average CPU frequency across all cores
+    let freq = std::fs::read_to_string("/proc/cpuinfo")
+        .map(|content| {
+            let freqs: Vec<f64> = content.lines()
+                .filter(|line| line.starts_with("cpu MHz"))
+                .filter_map(|line| line.split(':').nth(1)?.trim().parse().ok())
+                .collect();
+            freqs.iter().sum::<f64>() / freqs.len().max(1) as f64
+        })
+        .unwrap_or_default();
+
+    // Get CPU name
+    let cpu_name = std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|content| {
+            content.lines()
+                .find(|line| line.starts_with("model name"))
+                .and_then(|line| line.split(':').nth(1))
+                .map(|name| name.trim().to_string())
+        })
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+
+    let cpu_usage = system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / system.cpus().len() as f32;
     let total_memory = system.total_memory() as f32 / 1024.0/ 1024.0/ 1024.0;
     let used_memory = system.used_memory() as f32 / 1024.0/ 1024.0/ 1024.0;
     let available_memory = system.available_memory() as f32 / 1024.0/ 1024.0/ 1024.0;
-    
+    let uptime = System::uptime();
+
     format!(
-        "CPU Frequency: {}\n\
-         Number of Processes: {}\n\
-         CPU Uptime: {}\n\
-         Number of Cores: {} physical / {} logical\n\
-         Memory Usage: {:.2} GB / {:.2} GB\n\
-         Available Memory: {:.2} GB",
-        cpu_frequency,
-        process_count,
-        uptime,
-        p_core_count,
-        l_core_count,
-        used_memory,
+        "CPU Information:\n\
+         - Name: {}\n\
+         - Current Frequency: {:.0} MHz\n\
+         - CPU Usage: {:.1}%\n\
+         - Physical Cores: {}\n\
+         - Logical Cores: {}\n\
+         \n\
+         Memory Usage:\n\
+         - Total: {:.2} GB\n\
+         - Used: {:.2} GB\n\
+         - Available: {:.2} GB\n\
+         - Usage: {:.1}%\n\
+         \n\
+         System Information:\n\
+         - Number of Processes: {}\n\
+         - System Uptime: {}d {}h {}m {}s",
+        cpu_name,
+        freq,
+        cpu_usage,
+        num_cpus::get_physical(),
+        num_cpus::get(),
         total_memory,
-        available_memory
+        used_memory,
+        available_memory,
+        (used_memory / total_memory) * 100.0,
+        system.processes().len(),
+        uptime / 86400,
+        (uptime % 86400) / 3600,
+        (uptime % 3600) / 60,
+        uptime % 60
     )
 }
 
@@ -299,15 +363,7 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
     });
 
     siv.add_global_callback('s', |s| {
-        let system_info = get_system_info();
-        s.add_layer(
-            Dialog::around(TextView::new(system_info))
-                .title("System Information")
-                .button("Close", |s| { s.pop_layer(); })
-                .padding_lrtb(2, 2, 1, 1) 
-                .fixed_width(80)    
-                .fixed_height(20)         
-        );
+        show_system_info_dialog(s);
     });
     
     let mut table = TableView::<Process, BasicColumn>::new()
@@ -338,17 +394,17 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
     table.sort_by(BasicColumn::CPU, Ordering::Greater);
     
     table.set_on_submit(|siv, row, _| {
-        let table_view = siv.find_name::<TableView<Process, BasicColumn>>("table").unwrap();
-        if let Some(process) = table_view.borrow_item(row) {
-            let details = format!(
-                "PID: {}\nCommand: {}\nCPU Usage: {:.2}%\nMemory: {:.2} MB\nStatus: {:?}",
-                process.pid, process.cmd, process.cpu, process.mem, process.process_state
-            );
-            
+        if let Some(process) = siv.find_name::<TableView<Process, BasicColumn>>("table")
+            .unwrap()
+            .borrow_item(row) 
+        {
             siv.add_layer(
-                Dialog::around(TextView::new(details))
-                    .title("Process Details")
-                    .button("Close", |s| { s.pop_layer(); })
+                Dialog::around(TextView::new(format!(
+                    "PID: {}\nCommand: {}\nCPU Usage: {:.2}%\nMemory: {:.2} MB\nStatus: {:?}",
+                    process.pid, process.cmd, process.cpu, process.mem, process.process_state
+                )))
+                .title("Process Details")
+                .button("Close", |s| { s.pop_layer(); })
             );
         }
     });
@@ -424,4 +480,30 @@ siv.add_global_callback('r', |s| {
     
     TUI_RUNNING.store(false, AtomicOrdering::SeqCst);
     thread::sleep(Duration::from_millis(100));
+}
+
+// Add this function to create a real-time system info dialog
+fn show_system_info_dialog(siv: &mut Cursive) {
+    let content = TextView::new(get_system_info()).with_name("sysinfo_content");
+    let dialog = Dialog::around(content)
+        .title("System Information")
+        .button("Close", |s| {
+            UPDATES_PAUSED.store(false, AtomicOrdering::SeqCst);
+            s.pop_layer();
+        });
+    
+    siv.add_layer(dialog);
+    UPDATES_PAUSED.store(true, AtomicOrdering::SeqCst);
+    
+    let sink = siv.cb_sink().clone();
+    thread::spawn(move || {
+        while UPDATES_PAUSED.load(AtomicOrdering::SeqCst) {
+            sink.send(Box::new(|s| {
+                if let Some(mut view) = s.find_name::<TextView>("sysinfo_content") {
+                    view.set_content(get_system_info());
+                }
+            })).ok();
+            thread::sleep(Duration::from_millis(500));
+        }
+    });
 }
