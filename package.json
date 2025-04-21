@@ -6,6 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+<<<<<<< HEAD
   "repository": {
     "type": "git",
     "url": "git+https://OmarGanna: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@github.com/alyelaswad/Elreqaba-LPM.git"
@@ -19,5 +20,12 @@
   "homepage": "https://github.com/alyelaswad/Elreqaba-LPM#readme",
   "dependencies": {
     "express": "^5.1.0"
+=======
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+>>>>>>> adc56d48d66b4779e7fb54dbf29954714355d856
   }
 }

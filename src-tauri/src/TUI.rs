@@ -14,6 +14,7 @@ use std::time::Duration;
 use lazy_static::lazy_static;
 use num_cpus;
 use sysinfo::{Pid, Signal};
+use cursive::backend::Backend;
 
 
 #[derive(Clone, Debug)]
@@ -85,34 +86,92 @@ lazy_static! {
 
 fn act_on_selected_process<F>(siv: &mut Cursive, action: F, action_name: &str)
 where
-    F: Fn(&sysinfo::Process) -> bool,
+    F: Fn(&sysinfo::Process) -> bool + Send + 'static + Clone,
 {
     let table_view = siv.find_name::<TableView<Process, BasicColumn>>("table");
     if let Some(table) = table_view {
-        if let Some(selected_row) = table.row().and_then(|row| row.checked_sub(0)) {
+        // Get the currently selected row index using the same method as the table's on_submit
+        if let Some(selected_row) = table.item() {
+            // Get the process at the selected row index
             if let Some(process) = table.borrow_item(selected_row) {
                 let pid = process.pid;
-                let mut system = SYSTEM.lock().unwrap();
+                let cmd = process.cmd.clone();
+                let action_name = action_name.to_string();
                 
-                // Refresh specific process
-                system.refresh_processes_specifics(
-                    sysinfo::ProcessesToUpdate::Some(&[Pid::from(pid as usize)]),
-                    true,
-                    sysinfo::ProcessRefreshKind::everything(),
-                );
+                // Show a confirmation dialog first
+                siv.add_layer(
+                    Dialog::text(format!("Are you sure you want to {} process {} ({})?", action_name, pid, cmd))
+                        .button("Yes", move |s| {
+                            s.pop_layer();
+                            
+                            // Perform the action in a separate thread to avoid freezing
+                            let sink = s.cb_sink().clone();
+                            let action_clone = action.clone();
+                            let cmd_clone = cmd.clone();
+                            let action_name_clone = action_name.clone();
+                            
+                            thread::spawn(move || {
+                                let mut system = SYSTEM.lock().unwrap();
+                                
+                                // Refresh specific process
+                                system.refresh_processes_specifics(
+                                    sysinfo::ProcessesToUpdate::Some(&[Pid::from(pid as usize)]),
+                                    true,
+                                    sysinfo::ProcessRefreshKind::everything(),
+                                );
 
-                if let Some(sys_proc) = system.process(Pid::from(pid as usize)) {
-                    let result = action(sys_proc);
-                    let msg = if result {
-                        format!("{} signal sent to PID {}", action_name, pid)
-                    } else {
-                        format!("Failed to send {} signal to PID {}", action_name, pid)
-                    };
-                    siv.add_layer(Dialog::info(msg));
-                } else {
-                    siv.add_layer(Dialog::info("Process not found."));
-                }
+                                if let Some(sys_proc) = system.process(Pid::from(pid as usize)) {
+                                    let result = action_clone(sys_proc);
+                                    let msg = if result {
+                                        format!("{} signal sent to PID {} ({})", action_name_clone, pid, cmd_clone)
+                                    } else {
+                                        format!("Failed to send {} signal to PID {} ({})", action_name_clone, pid, cmd_clone)
+                                    };
+                                    
+                                    // Add a small delay to ensure the process has been killed
+                                    thread::sleep(Duration::from_millis(100));
+                                    
+                                    // Force a refresh of the system state
+                                    system.refresh_all();
+                                    
+                                    // Drop the system lock
+                                    drop(system);
+
+                                    // Show result in the UI
+                                    let sink_clone = sink.clone();
+                                    sink.send(Box::new(move |s| {
+                                        s.add_layer(
+                                            Dialog::info(msg)
+                                                .button("OK", |s| { s.pop_layer(); })
+                                        );
+                                        
+                                        // Schedule table updates
+                                        for _ in 0..3 {
+                                            let sink_clone = sink_clone.clone();
+                                            thread::spawn(move || {
+                                                thread::sleep(Duration::from_millis(200));
+                                                sink_clone.send(Box::new(move |s| {
+                                                    if let Some(mut table_view) = s.find_name::<TableView<Process, BasicColumn>>("table") {
+                                                        let processes = get_processes();
+                                                        table_view.set_items(processes);
+                                                    }
+                                                })).ok();
+                                            });
+                                        }
+                                    })).ok();
+                                } else {
+                                    let msg = format!("Process {} ({}) not found.", pid, cmd_clone);
+                                    sink.send(Box::new(move |s| {
+                                        s.add_layer(Dialog::info(msg));
+                                    })).ok();
+                                }
+                            });
+                        })
+                        .button("No", |s| { s.pop_layer(); })
+                );
             }
+        } else {
+            siv.add_layer(Dialog::info("No process selected. Please select a process first."));
         }
     }
 }
@@ -278,21 +337,20 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
     
     table.sort_by(BasicColumn::CPU, Ordering::Greater);
     
-    table.set_on_submit(|siv, _row, index| {
+    table.set_on_submit(|siv, row, _| {
         let table_view = siv.find_name::<TableView<Process, BasicColumn>>("table").unwrap();
-        
-        let process = table_view.borrow_item(index).unwrap().clone();
-        
-        let details = format!(
-            "PID: {}\nCommand: {}\nCPU Usage: {:.2}%\nMemory: {:.2} MB\nStatus: {:?}",
-            process.pid, process.cmd, process.cpu, process.mem, process.process_state
-        );
-        
-        siv.add_layer(
-            Dialog::around(TextView::new(details))
-                .title("Process Details")
-                .button("Close", |s| { s.pop_layer(); })
-        );
+        if let Some(process) = table_view.borrow_item(row) {
+            let details = format!(
+                "PID: {}\nCommand: {}\nCPU Usage: {:.2}%\nMemory: {:.2} MB\nStatus: {:?}",
+                process.pid, process.cmd, process.cpu, process.mem, process.process_state
+            );
+            
+            siv.add_layer(
+                Dialog::around(TextView::new(details))
+                    .title("Process Details")
+                    .button("Close", |s| { s.pop_layer(); })
+            );
+        }
     });
 
     let table_with_name = table.with_name("table").full_screen();
