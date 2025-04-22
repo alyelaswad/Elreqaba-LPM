@@ -1,6 +1,6 @@
 use cursive::align::HAlign;
 use cursive::traits::*;
-use cursive::views::{Dialog, TextView, ScrollView};
+use cursive::views::{Dialog, TextView, ScrollView, LinearLayout, DummyView, SelectView};
 use cursive::Cursive;
 use cursive::CursiveExt;
 use cursive::view::Nameable;
@@ -14,11 +14,9 @@ use std::time::Duration;
 use lazy_static::lazy_static;
 use num_cpus;
 use sysinfo::{Pid, Signal};
-use cursive::backend::Backend;
+use std::io::{BufRead, BufReader};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
-use std::path::Path;
-
+use std::fs::read_to_string;
 
 #[derive(Clone, Debug)]
 pub struct Process {
@@ -30,6 +28,7 @@ pub struct Process {
     pub cmd: String,
     pub start_time: u64,
     pub process_state: ProcessStatus,
+    pub priority: i32,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -42,6 +41,7 @@ pub enum BasicColumn {
     CMD,
     START,
     STATUS,
+    PRIORITY,
 }
 
 impl TableViewItem<BasicColumn> for Process {
@@ -60,6 +60,7 @@ impl TableViewItem<BasicColumn> for Process {
                 format!("{}", datetime.format("%H:%M:%S"))
             }
             BasicColumn::STATUS => format!("{:?}", self.process_state),
+            BasicColumn::PRIORITY => format!("{}", self.priority),
         }
     }
 
@@ -73,6 +74,7 @@ impl TableViewItem<BasicColumn> for Process {
             BasicColumn::CMD => self.cmd.cmp(&other.cmd),
             BasicColumn::START => self.start_time.cmp(&other.start_time),
             BasicColumn::STATUS => format!("{:?}", self.process_state).cmp(&format!("{:?}", other.process_state)),
+            BasicColumn::PRIORITY => self.priority.cmp(&other.priority),
         }
     }
 }
@@ -180,10 +182,163 @@ where
     }
 }
 
+// Helper functions for nice value management
+fn get_process_nice(pid: u32) -> Option<i32> {
+    match read_to_string(format!("/proc/{}/stat", pid)) {
+        Ok(contents) => {
+            let fields: Vec<&str> = contents.split_whitespace().collect();
+            fields.get(18).and_then(|&nice| nice.parse::<i32>().ok())
+        }
+        Err(_) => None
+    }
+}
 
+fn get_current_user() -> Option<String> {
+    std::process::Command::new("whoami")
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn needs_sudo(nice_value: i32, process_user: &Option<String>, current_nice: Option<i32>) -> bool {
+    let current_user = get_current_user();
+    nice_value < 0 || 
+        process_user.as_ref().map(|u| Some(u) != current_user.as_ref()).unwrap_or(true) ||
+        current_nice.map(|n| nice_value < n).unwrap_or(false)
+}
+
+fn execute_renice(pid: u32, nice_value: i32, needs_sudo: bool) -> std::io::Result<std::process::Output> {
+    let mut cmd = if needs_sudo {
+        let mut c = std::process::Command::new("sudo");
+        c.arg("renice");
+        c
+    } else {
+        std::process::Command::new("renice")
+    };
+    
+    cmd.arg(format!("{}", nice_value))
+        .arg("-p")
+        .arg(format!("{}", pid))
+        .output()
+}
+
+fn create_nice_values_list() -> Vec<(String, i32)> {
+    (-20..=19)
+        .map(|n| (format!("{:3} {}", n, 
+            if n < 0 { "(Higher Priority - Requires Root)" }
+            else if n > 0 { "(Lower Priority)" }
+            else { "(Default)" }), n))
+        .collect()
+}
+
+fn handle_priority_change(
+    s: &mut Cursive,
+    pid: u32,
+    cmd: &str,
+    nice_value: i32,
+    current_nice: Option<i32>,
+    needs_sudo: bool
+) {
+    match execute_renice(pid, nice_value, needs_sudo) {
+        Ok(output) if output.status.success() => {
+            thread::sleep(Duration::from_millis(100));
+            match get_process_nice(pid) {
+                Some(new_nice) if new_nice == nice_value => {
+                    show_success_dialog(s, current_nice.unwrap_or(0), new_nice, pid, cmd, needs_sudo);
+                }
+                Some(new_nice) => {
+                    show_verification_failed_dialog(s, current_nice.unwrap_or(0), nice_value, new_nice, needs_sudo);
+                }
+                None => {
+                    s.add_layer(Dialog::info("Failed to verify new nice value").button("OK", |s| { s.pop_layer(); }));
+                }
+            }
+        }
+        Ok(output) => {
+            show_error_dialog(s, &String::from_utf8_lossy(&output.stderr), needs_sudo);
+        }
+        Err(e) => {
+            show_error_dialog(s, &e.to_string(), needs_sudo);
+        }
+    }
+}
+
+fn show_success_dialog(s: &mut Cursive, old_nice: i32, new_nice: i32, pid: u32, cmd: &str, used_sudo: bool) {
+    s.add_layer(Dialog::info(format!(
+        "Priority successfully changed from {} to {} for process {} ({})\nUsed {} renice",
+        old_nice, new_nice, pid, cmd,
+        if used_sudo { "sudo" } else { "regular" }
+    )).button("OK", |s| {
+        s.pop_layer();
+        if let Some(mut table_view) = s.find_name::<TableView<Process, BasicColumn>>("table") {
+            let updated_processes = get_processes();
+            table_view.set_items(updated_processes);
+        }
+    }));
+}
+
+fn show_verification_failed_dialog(s: &mut Cursive, old_nice: i32, requested_nice: i32, current_nice: i32, needs_sudo: bool) {
+    s.add_layer(Dialog::info(format!(
+        "Priority change verification failed.\nPrevious: {}\nRequested: {}\nCurrent: {}\n{}",
+        old_nice, requested_nice, current_nice,
+        if needs_sudo && current_nice != requested_nice {
+            "This might be due to insufficient permissions. Try with sudo."
+        } else {
+            "The change was not applied as expected."
+        }
+    )).button("OK", |s| { s.pop_layer(); }));
+}
+
+fn show_error_dialog(s: &mut Cursive, error_msg: &str, needs_sudo: bool) {
+    s.add_layer(Dialog::info(format!(
+        "Failed to change priority: {}\nNote: {} privileges are required for this operation.",
+        error_msg,
+        if needs_sudo { "Root" } else { "Sufficient" }
+    )).button("OK", |s| { s.pop_layer(); }));
+}
+
+fn renice_process(siv: &mut Cursive) {
+    if let Some(table) = siv.find_name::<TableView<Process, BasicColumn>>("table") {
+        if let Some(selected_row) = table.item() {
+            if let Some(process) = table.borrow_item(selected_row) {
+                let pid = process.pid;
+                let cmd = process.cmd.clone();
+                let process_user = process.user.clone();
+                let current_nice = get_process_nice(pid);
+                
+                let dialog = Dialog::around(
+                    LinearLayout::vertical()
+                        .child(TextView::new(format!(
+                            "Change priority for process {} ({}) owned by {}\nCurrent nice value: {}", 
+                            pid, cmd, process_user.as_ref().map(|s| s.as_str()).unwrap_or("unknown"),
+                            current_nice.unwrap_or(0))))
+                        .child(DummyView)
+                        .child(TextView::new("Select nice value:"))
+                        .child(ScrollView::new(
+                            SelectView::new()
+                                .with_all(create_nice_values_list())
+                                .on_submit({
+                                    let process_user = process_user.clone();
+                                    let cmd = cmd.clone();
+                                    move |s, &nice_value| {
+                                        let needs_sudo = needs_sudo(nice_value, &process_user, current_nice);
+                                        handle_priority_change(s, pid, &cmd, nice_value, current_nice, needs_sudo);
+                                    }
+                                })
+                        ).fixed_height(15))
+                )
+                .title("Change Process Priority")
+                .button("Cancel", |s| { s.pop_layer(); });
+                
+                siv.add_layer(dialog);
+            }
+        } else {
+            siv.add_layer(Dialog::info("No process selected. Please select a process first."));
+        }
+    }
+}
 
 fn get_processes() -> Vec<Process> {
-    // Always refresh the system data
     let mut system = SYSTEM.lock().unwrap();
     system.refresh_all();
 
@@ -196,7 +351,6 @@ fn get_processes() -> Vec<Process> {
             let user = match process.user_id() {
                 Some(uid) => {
                     let uid_value = **uid;
-                    
                     match users::get_user_by_uid(uid_value) {
                         Some(user) => Some(user.name().to_string_lossy().into_owned()),
                         None => Some(format!("uid:{}", uid_value))
@@ -204,6 +358,9 @@ fn get_processes() -> Vec<Process> {
                 },
                 None => Some("unknown".to_string())
             };
+
+            // Get the nice value directly from /proc/[pid]/stat
+            let priority = get_process_nice(pid.as_u32()).unwrap_or(0);
             
             Process {
                 pid: pid.as_u32(),
@@ -214,11 +371,17 @@ fn get_processes() -> Vec<Process> {
                 cmd: process.name().to_string_lossy().into_owned(),
                 start_time: process.start_time(),
                 process_state: process.status(),
+                priority,
             }
         })
         .collect();
 
     processes
+}
+
+fn verify_nice_value(pid: u32) -> Option<i32> {
+    // Use the same method as get_process_nice to verify the nice value
+    get_process_nice(pid)
 }
 
 // Add this function to get real-time CPU frequency
@@ -377,6 +540,7 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
             "USER" => table = table.column(BasicColumn::USER, "USER", |c| c.align(HAlign::Left).width(10)),
             "CPU" => table = table.column(BasicColumn::CPU, "CPU %", |c| c.width(8).align(HAlign::Right)),
             "MEM" => table = table.column(BasicColumn::MEM, "MEM MB", |c| c.width(8).align(HAlign::Right)),
+            "NI" => table = table.column(BasicColumn::PRIORITY, "NI", |c| c.align(HAlign::Right).width(4)),
             "CMD" => table = table.column(BasicColumn::CMD, "CMD", |c| c.align(HAlign::Right).width(30)),
             "START" => table = table.column(BasicColumn::START, "START TIME", |c| c.align(HAlign::Left).width(10)),
             "STATUS" => table = table.column(BasicColumn::STATUS, "STATUS", |c| c.align(HAlign::Left).width(15)),
@@ -400,8 +564,8 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
         {
             siv.add_layer(
                 Dialog::around(TextView::new(format!(
-                    "PID: {}\nCommand: {}\nCPU Usage: {:.2}%\nMemory: {:.2} MB\nStatus: {:?}",
-                    process.pid, process.cmd, process.cpu, process.mem, process.process_state
+                    "PID: {}\nCommand: {}\nCPU Usage: {:.2}%\nMemory: {:.2} MB\nStatus: {:?}\nNice Value: {}",
+                    process.pid, process.cmd, process.cpu, process.mem, process.process_state, process.priority
                 )))
                 .title("Process Details")
                 .button("Close", |s| { s.pop_layer(); })
@@ -431,6 +595,7 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
                  - 'K' to kill the selected process\n\
                  - 'P' to pause the selected process\n\
                  - 'R' to resume the selected process\n\
+                 - 'N' to change process priority (nice value)\n\
                  - 'h' for help"
             ))
             .title("Help")
@@ -452,6 +617,10 @@ siv.add_global_callback('r', |s| {
     act_on_selected_process(s, |proc| proc.kill_with(Signal::Continue).unwrap_or(false), "Resume");
 });
 
+// Add this near the other key bindings in display_tui
+siv.add_global_callback('n', |s| {
+    renice_process(s);
+});
 
     let processes_clone = Arc::clone(&processes);
     let sink = siv.cb_sink().clone();

@@ -326,6 +326,26 @@ fn tui() {
                 },
                 None => Some("unknown".to_string())
             };
+
+            // Get the nice value for the process using ps command
+            let priority = std::process::Command::new("ps")
+                .arg("-o")
+                .arg("nice")
+                .arg("-p")
+                .arg(format!("{}", pid.as_u32()))
+                .output()
+                .ok()
+                .and_then(|output| {
+                    if output.status.success() {
+                        String::from_utf8_lossy(&output.stdout)
+                            .lines()
+                            .nth(1)
+                            .and_then(|line| line.trim().parse::<i32>().ok())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
             
             TUI::Process {
                 pid: pid.as_u32(),
@@ -336,6 +356,7 @@ fn tui() {
                 cmd: process.name().to_string_lossy().into_owned(),
                 start_time: process.start_time(),
                 process_state: process.status(),
+                priority,
             }
         })
         .collect();
@@ -347,9 +368,10 @@ fn tui() {
         "USER".into(),
         "CPU".into(),
         "MEM".into(),
+        "NI".into(),  // Changed from "PRIORITY" to "NI" to match the column definition
         "CMD".into(),
         "START".into(),
-        "STATUS".into(), // Status column added
+        "STATUS".into(),
     ];
 
     // Display the TUI
