@@ -17,6 +17,7 @@ use sysinfo::{Pid, Signal};
 use std::io::{BufRead, BufReader};
 use std::fs::File;
 use std::fs::read_to_string;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct Process {
@@ -493,6 +494,113 @@ fn custom_theme_from_cursive(_siv: &Cursive) -> cursive::theme::Theme {
     cursive::theme::Theme::default()
 }
 
+#[derive(Clone)]
+struct ProcessNode {
+    process: Process,
+    children: Vec<ProcessNode>,
+}
+
+fn build_process_tree(processes: &[Process]) -> Vec<ProcessNode> {
+    // Create a map of pid to process
+    let mut pid_map: std::collections::HashMap<u32, Vec<Process>> = std::collections::HashMap::new();
+    
+    // Group processes by their parent pid
+    for process in processes {
+        let ppid = process.ppid.unwrap_or(0);
+        pid_map.entry(ppid).or_default().push(process.clone());
+    }
+    
+    // Build tree starting from root processes (those with ppid 0 or 1)
+    let root_processes = pid_map.remove(&0).unwrap_or_default();
+    let mut tree = Vec::new();
+    
+    for process in root_processes {
+        tree.push(build_process_subtree(process, &mut pid_map));
+    }
+    
+    // Handle any remaining processes (in case of orphaned processes)
+    for (_, remaining_processes) in pid_map.iter() {
+        for process in remaining_processes {
+            tree.push(ProcessNode {
+                process: process.clone(),
+                children: Vec::new(),
+            });
+        }
+    }
+    
+    tree
+}
+
+fn build_process_subtree(process: Process, pid_map: &mut std::collections::HashMap<u32, Vec<Process>>) -> ProcessNode {
+    let mut node = ProcessNode {
+        process,
+        children: Vec::new(),
+    };
+    
+    if let Some(children) = pid_map.remove(&node.process.pid) {
+        for child in children {
+            node.children.push(build_process_subtree(child, pid_map));
+        }
+        // Sort children by PID
+        node.children.sort_by_key(|child| child.process.pid);
+    }
+    
+    node
+}
+
+fn format_process_tree(node: &ProcessNode, prefix: &str, is_last: bool, output: &mut String) {
+    let branch = if is_last { "└── " } else { "├── " };
+    let next_prefix = if is_last { "    " } else { "│   " };
+    
+    // Format current process - only show name and PID
+    output.push_str(&format!("{}{}{} ({})\n", 
+        prefix, 
+        branch, 
+        node.process.cmd,
+        node.process.pid
+    ));
+    
+    // Format children
+    for (i, child) in node.children.iter().enumerate() {
+        let is_last_child = i == node.children.len() - 1;
+        format_process_tree(child, &format!("{}{}", prefix, next_prefix), is_last_child, output);
+    }
+}
+
+fn show_process_tree(siv: &mut Cursive) {
+    let processes = get_processes();
+    let tree = build_process_tree(&processes);
+    
+    let mut tree_text = String::new();
+    for (i, root) in tree.iter().enumerate() {
+        format_process_tree(root, "", i == tree.len() - 1, &mut tree_text);
+    }
+    
+    let tree_view = ScrollView::new(
+        TextView::new(tree_text)
+            .with_name("tree_content")
+            .fixed_width(100)
+    ).fixed_height(20);
+    
+    let dialog = Dialog::around(tree_view)
+        .title("Process Tree")
+        .button("Refresh", |s| {
+            // Refresh the tree content
+            let processes = get_processes();
+            let tree = build_process_tree(&processes);
+            let mut tree_text = String::new();
+            for (i, root) in tree.iter().enumerate() {
+                format_process_tree(root, "", i == tree.len() - 1, &mut tree_text);
+            }
+            if let Some(mut view) = s.find_name::<TextView>("tree_content") {
+                view.set_content(tree_text);
+            }
+        })
+        .button("Close", |s| {s.pop_layer();});
+    
+    siv.add_layer(dialog);
+}
+
 pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Process>) {
     TUI_RUNNING.store(true, AtomicOrdering::SeqCst);
     UPDATES_PAUSED.store(false, AtomicOrdering::SeqCst);
@@ -621,6 +729,11 @@ siv.add_global_callback('r', |s| {
 siv.add_global_callback('n', |s| {
     renice_process(s);
 });
+
+    // Add the 't' key binding for process tree
+    siv.add_global_callback('t', |s| {
+        show_process_tree(s);
+    });
 
     let processes_clone = Arc::clone(&processes);
     let sink = siv.cb_sink().clone();
