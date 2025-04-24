@@ -11,6 +11,12 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "electron": "^28.0.0"
+    "electron": "27.3.1"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.9.1"
+  },
+  "config": {
+    "electron_mirror": "https://npmmirror.com/mirrors/electron/"
   }
 }

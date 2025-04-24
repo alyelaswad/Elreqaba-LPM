@@ -136,6 +136,18 @@
             text-align: center;
             color: #666;
         }
+        .chart-row {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .chart-container {
+            flex: 1;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
     </style>
 </head>
 <body>
@@ -151,6 +163,7 @@
         <div class="tabs">
             <div class="tab active" data-tab="processes">Process Table</div>
             <div class="tab" data-tab="graphs">Graphs</div>
+            <div class="tab" data-tab="track">Track Process</div>
         </div>
 
         <div class="tab-content active" id="processes">
@@ -172,8 +185,47 @@
 
         <div class="tab-content" id="graphs">
             <div class="graphs-container">
-                <h2>Graphs Coming Soon</h2>
-                <p>This feature is under development.</p>
+                <div class="chart-row">
+                    <div class="chart-container">
+                        <h2>Memory Usage History</h2>
+                        <canvas id="memoryChart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h2>CPU Utilization</h2>
+                        <canvas id="cpuChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="track">
+            <div class="track-container" style="padding: 20px; background-color: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <div style="margin-bottom: 20px;">
+                    <input type="number" id="trackPid" placeholder="Enter PID to track" style="padding: 8px; margin-right: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    <button class="button button-primary" id="addTrack">Track Process</button>
+                    <label style="margin-left: 15px;">
+                        <input type="checkbox" id="groupProcesses" style="margin-right: 5px;">
+                        Group processes by name
+                    </label>
+                </div>
+                <div class="tracked-processes" style="margin-bottom: 20px;">
+                    <h3>Tracked Processes</h3>
+                    <div id="trackedList" style="display: flex; flex-wrap: wrap; gap: 10px;"></div>
+                </div>
+                <div class="grouped-processes" style="flex: 1; background-color: #f5f5f5; padding: 15px; border-radius: 8px;">
+                    <h3>Grouped Processes</h3>
+                    <div id="groupedList" style="margin-top: 10px;"></div>
+                </div>
+                <div class="chart-row" style="display: flex; gap: 20px; margin-bottom: 20px;">
+                    <div class="chart-container" style="flex: 1; padding: 20px; background-color: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); height: 300px;">
+                        <h2 style="text-align: center; margin-bottom: 10px; font-size: 16px;">Memory Usage History</h2>
+                        <canvas id="trackMemoryChart" style="height: 250px;"></canvas>
+                    </div>
+                    <div class="chart-container" style="flex: 1; padding: 20px; background-color: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); height: 300px;">
+                        <h2 style="text-align: center; margin-bottom: 10px; font-size: 16px;">CPU Usage History</h2>
+                        <canvas id="trackCpuChart" style="height: 250px;"></canvas>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -185,20 +237,26 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         const { ipcRenderer } = require('electron');
         let selectedProcess = null;
         let isUpdatePaused = false;
+        let memoryChart = null;
+        let cpuChart = null;
+        let trackMemoryChart = null;
+        let trackCpuChart = null;
+        let trackedProcessesHistory = new Map();
+        const MAX_HISTORY = 20;
+        let memoryHistory = [];
+        let processColors = new Map();
 
-        function formatMemory(bytes) {
-            const units = ['B', 'KB', 'MB', 'GB'];
-            let size = bytes;
-            let unitIndex = 0;
-            while (size >= 1024 && unitIndex < units.length - 1) {
-                size /= 1024;
-                unitIndex++;
-            }
-            return `${size.toFixed(1)} ${units[unitIndex]}`;
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
         function updateProcessList(processes) {
@@ -214,7 +272,7 @@
                     <td>${process.pid}</td>
                     <td>${process.name}</td>
                     <td>${process.cpu.toFixed(1)}%</td>
-                    <td>${formatMemory(process.memory)}</td>
+                    <td>${formatBytes(process.memory)}</td>
                     <td>${process.state}</td>
                 `;
 
@@ -231,6 +289,586 @@
 
                 tbody.appendChild(row);
             });
+        }
+
+        function getRandomColor() {
+            const letters = '0123456789ABCDEF';
+            let color = '#';
+            for (let i = 0; i < 6; i++) {
+                color += letters[Math.floor(Math.random() * 16)];
+            }
+            return color;
+        }
+
+        function getColorForProcess(processName) {
+            if (!processColors.has(processName)) {
+                processColors.set(processName, getRandomColor());
+            }
+            return processColors.get(processName);
+        }
+
+        function normalizeProcessName(name) {
+            // Remove numbers and special characters, lowercase
+            return name.replace(/[0-9]+/g, '').replace(/[^a-zA-Z]/g, '').toLowerCase();
+        }
+
+        function groupProcessData(processData) {
+            const grouped = new Map();
+            processData.forEach(process => {
+                const normalizedName = normalizeProcessName(process.name);
+                if (grouped.has(normalizedName)) {
+                    const existing = grouped.get(normalizedName);
+                    existing.cpu += process.cpu;
+                    existing.memory += process.memory;
+                    existing.instances.push(process.name);
+                } else {
+                    grouped.set(normalizedName, {
+                        name: process.name,
+                        normalizedName: normalizedName,
+                        cpu: process.cpu,
+                        memory: process.memory,
+                        instances: [process.name]
+                    });
+                }
+            });
+            return Array.from(grouped.values())
+                .sort((a, b) => b.cpu - a.cpu)
+                .slice(0, 30); // Limit to top 8 processes for better readability
+        }
+
+        function initializeCharts() {
+            const chartContainer = document.querySelector('.chart-row');
+            chartContainer.style.display = 'flex';
+            chartContainer.style.flexDirection = 'column';
+            chartContainer.style.gap = '10px';
+            chartContainer.style.padding = '20px';
+            chartContainer.style.backgroundColor = 'white';
+            chartContainer.style.borderRadius = '8px';
+
+            // Create charts row
+            const chartsRow = document.createElement('div');
+            chartsRow.style.display = 'flex';
+            chartsRow.style.flexDirection = 'row';
+            chartsRow.style.gap = '20px';
+            chartsRow.style.justifyContent = 'center';
+            chartsRow.style.height = '200px';
+
+            // Create title and chart containers
+            const memorySection = document.createElement('div');
+            memorySection.style.flex = '1';
+            memorySection.style.maxWidth = '45%';
+            memorySection.style.height = '100%';
+            memorySection.innerHTML = '<h3 style="text-align: center; margin-bottom: 5px; font-size: 14px;">Memory Usage Over Time</h3>';
+            
+            const cpuSection = document.createElement('div');
+            cpuSection.style.flex = '1';
+            cpuSection.style.maxWidth = '45%';
+            cpuSection.style.height = '100%';
+            cpuSection.innerHTML = '<h3 style="text-align: center; margin-bottom: 5px; font-size: 14px;">CPU Usage Distribution</h3>';
+
+            // Move the canvas elements
+            const memoryCanvas = document.getElementById('memoryChart');
+            const cpuCanvas = document.getElementById('cpuChart');
+            memorySection.appendChild(memoryCanvas);
+            cpuSection.appendChild(cpuCanvas);
+
+            // Add charts to the row
+            chartsRow.appendChild(memorySection);
+            chartsRow.appendChild(cpuSection);
+
+            // Create shared legend container
+            const legendContainer = document.createElement('div');
+            legendContainer.style.display = 'flex';
+            legendContainer.style.justifyContent = 'center';
+            legendContainer.style.flexWrap = 'wrap';
+            legendContainer.style.gap = '15px';
+            legendContainer.style.padding = '10px';
+            legendContainer.style.marginTop = '10px';
+
+            // Clear and rebuild chart container
+            chartContainer.innerHTML = '';
+            chartContainer.appendChild(chartsRow);
+            chartContainer.appendChild(legendContainer);
+
+            // Memory Chart
+            const memoryCtx = memoryCanvas.getContext('2d');
+            memoryChart = new Chart(memoryCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 300
+                    },
+                    layout: {
+                        padding: {
+                            left: 10,
+                            right: 10,
+                            top: 10,
+                            bottom: 10
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            },
+                            ticks: {
+                                maxTicksLimit: 8,
+                                maxRotation: 0,
+                                font: {
+                                    size: 10
+                                }
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: false
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return formatBytes(value);
+                                },
+                                maxTicksLimit: 5,
+                                font: {
+                                    size: 10
+                                }
+                            },
+                            grid: {
+                                color: 'rgba(0,0,0,0.1)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+
+            // CPU Chart
+            const cpuCtx = cpuCanvas.getContext('2d');
+            cpuChart = new Chart(cpuCtx, {
+                type: 'pie',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        data: [],
+                        backgroundColor: []
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: {
+                        padding: {
+                            left: 10,
+                            right: 10,
+                            top: 10,
+                            bottom: 10
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+
+            // Style chart containers
+            document.querySelectorAll('.chart-container').forEach(container => {
+                container.style.height = '160px';
+                container.style.position = 'relative';
+            });
+        }
+
+        function updateCharts(metrics) {
+            const groupedData = groupProcessData(metrics.processData);
+            
+            // Update Memory Chart
+            const timestamp = metrics.timestamp;
+            memoryHistory.push(timestamp);
+            if (memoryHistory.length > MAX_HISTORY) {
+                memoryHistory.shift();
+            }
+
+            // Initialize or update datasets
+            if (memoryChart.data.datasets.length === 0) {
+                // First time setup
+                memoryChart.data.datasets = groupedData.map(process => {
+                    const color = getColorForProcess(process.normalizedName);
+                    return {
+                        label: process.name,
+                        data: new Array(memoryHistory.length).fill(process.memory),
+                        borderColor: color,
+                        backgroundColor: color + '40',
+                        tension: 0.1,
+                        fill: false
+                    };
+                });
+            } else {
+                // Update existing datasets
+                groupedData.forEach((process, index) => {
+                    if (index < memoryChart.data.datasets.length) {
+                        const dataset = memoryChart.data.datasets[index];
+                        dataset.data.push(process.memory);
+                        if (dataset.data.length > MAX_HISTORY) {
+                            dataset.data.shift();
+                        }
+                        dataset.label = process.name;
+                        const color = getColorForProcess(process.normalizedName);
+                        dataset.borderColor = color;
+                        dataset.backgroundColor = color + '40';
+                    }
+                });
+
+                // Remove extra datasets if needed
+                while (memoryChart.data.datasets.length > groupedData.length) {
+                    memoryChart.data.datasets.pop();
+                }
+            }
+
+            memoryChart.data.labels = memoryHistory;
+            memoryChart.update('none'); // Use 'none' mode for smoother updates
+
+            // Update CPU Chart
+            cpuChart.data.labels = groupedData.map(p => p.name);
+            cpuChart.data.datasets[0].data = groupedData.map(p => p.cpu);
+            cpuChart.data.datasets[0].backgroundColor = groupedData.map(p => getColorForProcess(p.normalizedName));
+            cpuChart.update('none');
+
+            // Update shared legend
+            const legendContainer = document.querySelector('.chart-row > div:last-child');
+            legendContainer.innerHTML = '';
+            groupedData.forEach((process, index) => {
+                const color = getColorForProcess(process.normalizedName);
+                const legendItem = document.createElement('div');
+                legendItem.style.display = 'flex';
+                legendItem.style.alignItems = 'center';
+                legendItem.style.gap = '5px';
+                legendItem.style.cursor = 'pointer';
+                legendItem.style.fontSize = '12px';
+                legendItem.style.padding = '2px 5px';
+                legendItem.innerHTML = `
+                    <span style="width: 12px; height: 12px; background-color: ${color}; display: inline-block; border-radius: 2px;"></span>
+                    <span>${process.name}</span>
+                `;
+                legendItem.onclick = () => {
+                    const isHidden = memoryChart.getDatasetMeta(index).hidden;
+                    memoryChart.getDatasetMeta(index).hidden = !isHidden;
+                    cpuChart.getDatasetMeta(0).data[index].hidden = !isHidden;
+                    legendItem.style.opacity = isHidden ? '1' : '0.5';
+                    memoryChart.update();
+                    cpuChart.update();
+                };
+                legendContainer.appendChild(legendItem);
+            });
+        }
+
+        function initializeTrackCharts() {
+            const memoryCtx = document.getElementById('trackMemoryChart').getContext('2d');
+            trackMemoryChart = new Chart(memoryCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 300
+                    },
+                    layout: {
+                        padding: {
+                            left: 10,
+                            right: 10,
+                            top: 10,
+                            bottom: 10
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            },
+                            ticks: {
+                                maxTicksLimit: 8,
+                                maxRotation: 0,
+                                font: {
+                                    size: 10
+                                }
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Memory (bytes)',
+                                font: {
+                                    size: 12
+                                }
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return formatBytes(value);
+                                },
+                                maxTicksLimit: 5,
+                                font: {
+                                    size: 10
+                                }
+                            },
+                            grid: {
+                                color: 'rgba(0,0,0,0.1)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'bottom',
+                            labels: {
+                                font: {
+                                    size: 10
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            const cpuCtx = document.getElementById('trackCpuChart').getContext('2d');
+            trackCpuChart = new Chart(cpuCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 300
+                    },
+                    layout: {
+                        padding: {
+                            left: 10,
+                            right: 10,
+                            top: 10,
+                            bottom: 10
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            },
+                            ticks: {
+                                maxTicksLimit: 8,
+                                maxRotation: 0,
+                                font: {
+                                    size: 10
+                                }
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'CPU Usage (%)',
+                                font: {
+                                    size: 12
+                                }
+                            },
+                            ticks: {
+                                maxTicksLimit: 5,
+                                font: {
+                                    size: 10
+                                }
+                            },
+                            grid: {
+                                color: 'rgba(0,0,0,0.1)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'bottom',
+                            labels: {
+                                font: {
+                                    size: 10
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateTrackedProcesses(processes) {
+            const trackedList = document.getElementById('trackedList');
+            const groupedList = document.getElementById('groupedList');
+            trackedList.innerHTML = '';
+            groupedList.innerHTML = '';
+            
+            // Group processes by name
+            const groupedProcesses = new Map();
+            processes.forEach(process => {
+                const name = process.name;
+                if (!groupedProcesses.has(name)) {
+                    groupedProcesses.set(name, []);
+                }
+                groupedProcesses.get(name).push(process);
+            });
+            
+            // Update tracked processes list
+            processes.forEach(process => {
+                const processCard = document.createElement('div');
+                processCard.style.padding = '10px';
+                processCard.style.backgroundColor = '#f5f5f5';
+                processCard.style.borderRadius = '4px';
+                processCard.style.display = 'flex';
+                processCard.style.alignItems = 'center';
+                processCard.style.gap = '10px';
+                
+                processCard.innerHTML = `
+                    <span>PID: ${process.pid}</span>
+                    <span>${process.name}</span>
+                    <button class="button button-secondary" onclick="untrackProcess(${process.pid})">Remove</button>
+                `;
+                
+                trackedList.appendChild(processCard);
+            });
+
+            // Update grouped processes list
+            groupedProcesses.forEach((processes, name) => {
+                const groupCard = document.createElement('div');
+                groupCard.style.marginBottom = '15px';
+                groupCard.style.backgroundColor = 'white';
+                groupCard.style.padding = '10px';
+                groupCard.style.borderRadius = '4px';
+                groupCard.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+
+                const pids = processes.map(p => p.pid).join(', ');
+                const totalMemory = processes.reduce((sum, p) => sum + p.memory, 0);
+                const avgCpu = processes.reduce((sum, p) => sum + p.cpu, 0) / processes.length;
+
+                groupCard.innerHTML = `
+                    <div style="font-weight: bold; margin-bottom: 5px;">${name}</div>
+                    <div style="font-size: 0.9em; color: #666;">
+                        <div>Process Count: ${processes.length}</div>
+                        <div>PIDs: ${pids}</div>
+                        <div>Total Memory: ${formatBytes(totalMemory)}</div>
+                        <div>Average CPU: ${avgCpu.toFixed(1)}%</div>
+                    </div>
+                `;
+
+                groupedList.appendChild(groupCard);
+            });
+        }
+
+        function updateTrackCharts(processes) {
+            const timestamp = new Date().toLocaleTimeString();
+            const shouldGroup = document.getElementById('groupProcesses').checked;
+            
+            let processesToChart = processes;
+            if (shouldGroup) {
+                // Group processes by name
+                const groupedByName = new Map();
+                processes.forEach(process => {
+                    if (!groupedByName.has(process.name)) {
+                        groupedByName.set(process.name, {
+                            pid: process.name, // Use name as identifier
+                            name: process.name,
+                            memory: 0,
+                            cpu: 0
+                        });
+                    }
+                    const group = groupedByName.get(process.name);
+                    group.memory += process.memory;
+                    group.cpu += process.cpu;
+                });
+                processesToChart = Array.from(groupedByName.values());
+            }
+            
+            // Get the current number of data points from an existing process
+            const existingDataPoints = Array.from(trackedProcessesHistory.values())[0]?.timestamps.length || 0;
+            
+            processesToChart.forEach(process => {
+                const processId = shouldGroup ? process.name : process.pid;
+                if (!trackedProcessesHistory.has(processId)) {
+                    trackedProcessesHistory.set(processId, {
+                        timestamps: Array(existingDataPoints).fill(timestamp),
+                        memory: Array(existingDataPoints).fill(null),
+                        cpu: Array(existingDataPoints).fill(null),
+                        color: getRandomColor()
+                    });
+                }
+                
+                const history = trackedProcessesHistory.get(processId);
+                history.timestamps.push(timestamp);
+                history.memory.push(process.memory);
+                history.cpu.push(process.cpu);
+                
+                if (history.timestamps.length > MAX_HISTORY) {
+                    history.timestamps.shift();
+                    history.memory.shift();
+                    history.cpu.shift();
+                }
+            });
+
+            // Clean up histories of ungrouped processes when grouping is enabled
+            if (shouldGroup) {
+                for (const [processId] of trackedProcessesHistory) {
+                    if (!isNaN(processId)) { // If processId is a number (PID)
+                        trackedProcessesHistory.delete(processId);
+                    }
+                }
+            } else {
+                // Clean up grouped histories when grouping is disabled
+                for (const [processId] of trackedProcessesHistory) {
+                    if (isNaN(processId)) { // If processId is not a number (name)
+                        trackedProcessesHistory.delete(processId);
+                    }
+                }
+            }
+            
+            // Update memory chart
+            trackMemoryChart.data.labels = Array.from(trackedProcessesHistory.values())[0]?.timestamps || [];
+            trackMemoryChart.data.datasets = Array.from(trackedProcessesHistory.entries()).map(([processId, data]) => ({
+                label: shouldGroup ? `Group: ${processId}` : `PID ${processId}`,
+                data: data.memory,
+                borderColor: data.color,
+                backgroundColor: data.color + '40',
+                tension: 0.1,
+                spanGaps: true
+            }));
+            trackMemoryChart.update();
+            
+            // Update CPU chart
+            trackCpuChart.data.labels = Array.from(trackedProcessesHistory.values())[0]?.timestamps || [];
+            trackCpuChart.data.datasets = Array.from(trackedProcessesHistory.entries()).map(([processId, data]) => ({
+                label: shouldGroup ? `Group: ${processId}` : `PID ${processId}`,
+                data: data.cpu,
+                borderColor: data.color,
+                backgroundColor: data.color + '40',
+                tension: 0.1,
+                spanGaps: true
+            }));
+            trackCpuChart.update();
+        }
+
+        function untrackProcess(pid) {
+            ipcRenderer.send('untrack-process', pid);
+            trackedProcessesHistory.delete(pid);
         }
 
         document.querySelectorAll('.tab').forEach(tab => {
@@ -262,9 +900,37 @@
             ipcRenderer.send('refresh-processes');
         });
 
-        ipcRenderer.on('process-update', (event, processes) => {
+        // Initialize charts when the graphs tab is shown
+        document.querySelector('.tab[data-tab="graphs"]').addEventListener('click', () => {
+            if (!memoryChart || !cpuChart) {
+                initializeCharts();
+            }
+        });
+
+        document.getElementById('addTrack').addEventListener('click', () => {
+            const pid = document.getElementById('trackPid').value;
+            if (pid) {
+                ipcRenderer.send('track-process', pid);
+                document.getElementById('trackPid').value = '';
+            }
+        });
+
+        document.querySelector('.tab[data-tab="track"]').addEventListener('click', () => {
+            if (!trackMemoryChart || !trackCpuChart) {
+                initializeTrackCharts();
+            }
+        });
+
+        ipcRenderer.on('process-update', (event, data) => {
             if (!isUpdatePaused) {
-                updateProcessList(processes);
+                updateProcessList(data.processes);
+                if (document.querySelector('.tab-content#graphs').classList.contains('active')) {
+                    updateCharts(data.metrics);
+                }
+                if (document.querySelector('.tab-content#track').classList.contains('active')) {
+                    updateTrackedProcesses(data.trackedProcesses || []);
+                    updateTrackCharts(data.trackedProcesses || []);
+                }
             }
         });
 
@@ -272,6 +938,12 @@
             if (!e.target.closest('.action-menu') && !e.target.closest('.process-row')) {
                 document.getElementById('actionMenu').style.display = 'none';
             }
+        });
+
+        // Add event listener for grouping toggle
+        document.getElementById('groupProcesses').addEventListener('change', function() {
+            // Clear the history when switching modes
+            trackedProcessesHistory.clear();
         });
     </script>
 </body>
