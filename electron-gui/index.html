@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Process Monitor</title>
+    <style>
+        body {
+            background-color: #FFEB3B;
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        }
+        .container {
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            background-color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+        }
+        .tabs {
+            display: flex;
+            gap: 2px;
+            background-color: white;
+            padding: 10px 10px 0 10px;
+            border-radius: 8px 8px 0 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            border-radius: 8px 8px 0 0;
+            color: #666;
+            transition: all 0.3s ease;
+        }
+        .tab.active {
+            background-color: #FFEB3B;
+            color: #333;
+            font-weight: 500;
+        }
+        .tab-content {
+            display: none;
+            background-color: white;
+            border-radius: 0 8px 8px 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .process-table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: white;
+        }
+        .process-table th {
+            background-color: #f5f5f5;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #333;
+            border-bottom: 2px solid #eee;
+        }
+        .process-table td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+            color: #444;
+        }
+        .process-row {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .process-row:hover {
+            background-color: #f8f8f8;
+        }
+        .process-row.selected {
+            background-color: #e3f2fd;
+        }
+        .action-menu {
+            position: absolute;
+            background-color: white;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            display: none;
+            z-index: 1000;
+        }
+        .action-menu.visible {
+            display: block;
+        }
+        .action-item {
+            padding: 8px 16px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            color: #333;
+        }
+        .action-item:hover {
+            background-color: #f5f5f5;
+        }
+        .button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        .button-primary {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .button-primary:hover {
+            background-color: #45a049;
+        }
+        .button-secondary {
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .button-secondary:hover {
+            background-color: #e0e0e0;
+        }
+        .graphs-container {
+            padding: 20px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">Process Monitor</div>
+            <div class="controls">
+                <button class="button button-secondary" id="pauseUpdate">Pause Update</button>
+                <button class="button button-primary" id="refresh">Refresh</button>
+            </div>
+        </div>
+        
+        <div class="tabs">
+            <div class="tab active" data-tab="processes">Process Table</div>
+            <div class="tab" data-tab="graphs">Graphs</div>
+        </div>
+
+        <div class="tab-content active" id="processes">
+            <table class="process-table">
+                <thead>
+                    <tr>
+                        <th>PID</th>
+                        <th>Name</th>
+                        <th>CPU %</th>
+                        <th>Memory</th>
+                        <th>State</th>
+                    </tr>
+                </thead>
+                <tbody id="processList">
+                    <!-- Process rows will be inserted here -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="tab-content" id="graphs">
+            <div class="graphs-container">
+                <h2>Graphs Coming Soon</h2>
+                <p>This feature is under development.</p>
+            </div>
+        </div>
+
+        <div class="action-menu" id="actionMenu">
+            <div class="action-item" data-action="kill">Kill Process</div>
+            <div class="action-item" data-action="pause">Pause Process</div>
+            <div class="action-item" data-action="resume">Resume Process</div>
+            <div class="action-item" data-action="priority">Change Priority</div>
+        </div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+        let selectedProcess = null;
+        let isUpdatePaused = false;
+
+        function formatMemory(bytes) {
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let size = bytes;
+            let unitIndex = 0;
+            while (size >= 1024 && unitIndex < units.length - 1) {
+                size /= 1024;
+                unitIndex++;
+            }
+            return `${size.toFixed(1)} ${units[unitIndex]}`;
+        }
+
+        function updateProcessList(processes) {
+            const tbody = document.getElementById('processList');
+            tbody.innerHTML = '';
+
+            processes.forEach(process => {
+                const row = document.createElement('tr');
+                row.className = 'process-row';
+                row.dataset.pid = process.pid;
+                
+                row.innerHTML = `
+                    <td>${process.pid}</td>
+                    <td>${process.name}</td>
+                    <td>${process.cpu.toFixed(1)}%</td>
+                    <td>${formatMemory(process.memory)}</td>
+                    <td>${process.state}</td>
+                `;
+
+                row.addEventListener('click', (e) => {
+                    const rows = document.querySelectorAll('.process-row');
+                    rows.forEach(r => r.classList.remove('selected'));
+                    row.classList.add('selected');
+                    selectedProcess = process;
+                    const menu = document.getElementById('actionMenu');
+                    menu.style.display = 'block';
+                    menu.style.left = `${e.pageX}px`;
+                    menu.style.top = `${e.pageY}px`;
+                });
+
+                tbody.appendChild(row);
+            });
+        }
+
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));                
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        document.getElementById('actionMenu').addEventListener('click', (e) => {
+            const action = e.target.dataset.action;
+            if (action && selectedProcess) {
+                ipcRenderer.send('process-action', {
+                    action,
+                    pid: selectedProcess.pid
+                });
+            }
+            document.getElementById('actionMenu').style.display = 'none';
+        });
+
+        document.getElementById('pauseUpdate').addEventListener('click', function() {
+            isUpdatePaused = !isUpdatePaused;
+            this.textContent = isUpdatePaused ? 'Resume Update' : 'Pause Update';
+        });
+
+        document.getElementById('refresh').addEventListener('click', () => {
+            ipcRenderer.send('refresh-processes');
+        });
+
+        ipcRenderer.on('process-update', (event, processes) => {
+            if (!isUpdatePaused) {
+                updateProcessList(processes);
+            }
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.action-menu') && !e.target.closest('.process-row')) {
+                document.getElementById('actionMenu').style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html> 

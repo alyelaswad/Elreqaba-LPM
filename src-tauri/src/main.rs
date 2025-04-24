@@ -8,6 +8,8 @@ use users::get_user_by_uid;
 use nix::sys::signal::{kill, Signal};
 use chrono::{Local}; 
 use sysinfo::{Pid};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 fn log_by_pid(pid_str: String) {
     let mut system = System::new_all();
@@ -397,6 +399,7 @@ fn change_niceness(pid: u32, niceness: i32) {
 }
 fn main() {
     let initial_pids = get_pid_and_command();
+    let running = Arc::new(AtomicBool::new(true));
 
     loop {
         let mut command = String::new();
@@ -408,7 +411,8 @@ fn main() {
         let command = command.trim();
 
         if command.eq_ignore_ascii_case("exit") {
-            println!("Exited!");
+            running.store(false, Ordering::SeqCst);
+            println!("Exiting...");
             break;
         }
 
@@ -527,6 +531,29 @@ fn main() {
             }
 
             Some(&"tui") => tui(),
+
+            Some(&"gui") | Some(&"GUI") => {
+                let running_clone = running.clone();
+                let current_dir = std::env::current_dir().expect("Failed to get current directory");
+                let electron_dir = current_dir.join("../electron-gui");
+                
+                thread::spawn(move || {
+                    let mut child = Command::new("npm")
+                        .arg("start")
+                        .current_dir(&electron_dir)
+                        .spawn()
+                        .expect("Failed to start Electron");
+
+                    println!("GUI running successfully!");
+                    
+                    while running_clone.load(Ordering::SeqCst) {
+                        thread::sleep(time::Duration::from_millis(100));
+                    }
+                    
+                    // Kill the Electron process when exit is called
+                    let _ = child.kill();
+                });
+            }
 
             Some(cmd) => eprintln!("Unknown command: {}", cmd),
 

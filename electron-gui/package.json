@@ -1,0 +1,16 @@
+{
+  "name": "electron-gui",
+  "version": "1.0.0",
+  "description": "Welcome GUI for Elreqaba",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "electron": "^28.0.0"
+  }
+}
