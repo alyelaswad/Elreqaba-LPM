@@ -23,57 +23,103 @@ function createWindow() {
 
 async function getProcesses() {
     try {
-        const { stdout } = await execPromise('ps -eo pid,pcpu,pmem,comm,stat,command');
+        // Use a more detailed ps command that works on both macOS and Linux
+        const { stdout } = await execPromise('ps -ax -o pid,pcpu,pmem,comm,state,command');
         const processes = stdout.split('\n')
             .slice(1) 
             .filter(line => line.trim())
             .map(line => {
-                const [pid, cpu, mem, comm, stat, ...cmdParts] = line.trim().split(/\s+/);
-                const command = cmdParts.join(' ');
-                let name = command.split('/').pop().split(' ')[0];
-                if (name === '') name = comm;
+                const parts = line.trim().split(/\s+/);
+                const pid = parts[0];
+                const cpu = parts[1];
+                const mem = parts[2];
+                const comm = parts[3];
+                const state = parts[4];
+                const command = parts.slice(5).join(' ');
+
+                // Get a clean process name
+                let name;
+                if (command.includes('/')) {
+                    // If command has a path, get the last part
+                    name = command.split('/').pop().split(' ')[0];
+                } else {
+                    // Otherwise use the comm field but clean it
+                    name = comm.split('/').pop();
+                }
+
+                // Clean up the name if it's still not good
+                if (!name || name === '' || name === '.' || name === 'ps') {
+                    name = comm;
+                }
+                
                 const stateMap = {
                     'R': 'Running',
                     'S': 'Sleeping',
-                    'D': 'Uninterruptible Sleep',
-                    'Z': 'Zombie',
+                    'I': 'Idle',
                     'T': 'Stopped',
-                    't': 'Tracing Stop',
-                    'X': 'Dead',
-                    'x': 'Dead',
-                    'K': 'Wakekill',
-                    'W': 'Waking',
-                    'P': 'Parked',
-                    'I': 'Idle'
+                    'U': 'Uninterruptible Sleep',
+                    'Z': 'Zombie',
+                    'D': 'Uninterruptible Sleep'
                 };
-                const baseState = stat[0];
-                const modifiers = stat.slice(1);
-                let state = stateMap[baseState] || baseState;
-                if (modifiers.includes('s')) state += ' (Session Leader)';
-                if (modifiers.includes('l')) state += ' (Multi-threaded)';
-                if (modifiers.includes('+')) state += ' (Foreground)';
-                if (modifiers.includes('<')) state += ' (High Priority)';
-                if (modifiers.includes('N')) state += ' (Low Priority)';
+
+                let processState = stateMap[state[0]] || state;
+                // Add additional state information
+                if (state.includes('+')) processState += ' (Foreground)';
+                if (state.includes('s')) processState += ' (Session Leader)';
+                if (state.includes('<')) processState += ' (High Priority)';
+                if (state.includes('N')) processState += ' (Low Priority)';
 
                 return {
                     pid: parseInt(pid),
                     cpu: parseFloat(cpu),
-                    memory: parseFloat(mem) * 1024 * 1024, // Memory in bytes
+                    memory: parseFloat(mem) * 1024 * 1024, // Convert percentage to bytes
                     name,
-                    state,
+                    state: processState,
                     command
                 };
             })
+            .filter(process => process.name && process.name.trim() !== '') // Filter out processes with empty names
             .sort((a, b) => b.cpu - a.cpu)
             .slice(0, 10); // Get top 10 processes
 
-        // Get total system metrics
-        const { stdout: memInfo } = await execPromise('free -b | grep Mem');
-        const totalMemory = parseInt(memInfo.split(/\s+/)[1]);
-        const usedMemory = parseInt(memInfo.split(/\s+/)[2]);
+        // Get system metrics based on platform
+        let totalMemory = 0;
+        let usedMemory = 0;
+        let cpuUsage = 0;
 
-        const { stdout: cpuInfo } = await execPromise("top -bn1 | grep 'Cpu(s)' | awk '{print $2 + $4}'");
-        const cpuUsage = parseFloat(cpuInfo);
+        if (process.platform === 'darwin') {
+            // macOS memory info
+            const { stdout: memInfo } = await execPromise('vm_stat');
+            const pageSize = 4096;
+            const memStats = {};
+            
+            memInfo.split('\n').forEach(line => {
+                const match = line.match(/^(.+):\s+(\d+)/);
+                if (match) {
+                    memStats[match[1]] = parseInt(match[2]) * pageSize;
+                }
+            });
+
+            totalMemory = memStats['Pages free'] + memStats['Pages active'] + memStats['Pages inactive'] + memStats['Pages wired down'];
+            usedMemory = totalMemory - memStats['Pages free'];
+
+            // macOS CPU info
+            const { stdout: cpuInfo } = await execPromise("top -l 1 -n 0 | grep 'CPU usage'");
+            const cpuMatch = cpuInfo.match(/(\d+\.\d+)% user/);
+            cpuUsage = cpuMatch ? parseFloat(cpuMatch[1]) : 0;
+        } else {
+            // Linux memory info
+            const { stdout: memInfo } = await execPromise('free -b');
+            const memLines = memInfo.split('\n');
+            const memParts = memLines[1].split(/\s+/);
+            totalMemory = parseInt(memParts[1]);
+            usedMemory = parseInt(memParts[2]);
+
+            // Linux CPU info
+            const { stdout: cpuInfo } = await execPromise("top -bn1 | grep '%Cpu'");
+            const cpuParts = cpuInfo.split(/\s+/);
+            cpuUsage = parseFloat(cpuParts[1]);
+        }
 
         return {
             processes,
@@ -85,7 +131,7 @@ async function getProcesses() {
                 processData: processes.map(p => ({
                     name: p.name,
                     cpu: p.cpu,
-                    memory: p.memory // Memory in bytes
+                    memory: p.memory
                 }))
             }
         };
@@ -155,19 +201,46 @@ async function handleProcessAction(action, pid) {
         switch (action) {
             case 'kill':
                 await execPromise(`kill -9 ${pid}`);
+                mainWindow.webContents.send('process-action-result', {
+                    success: true,
+                    action,
+                    pid
+                });
                 break;
             case 'pause':
                 await execPromise(`kill -STOP ${pid}`);
+                mainWindow.webContents.send('process-action-result', {
+                    success: true,
+                    action,
+                    pid
+                });
                 break;
             case 'resume':
                 await execPromise(`kill -CONT ${pid}`);
+                mainWindow.webContents.send('process-action-result', {
+                    success: true,
+                    action,
+                    pid
+                });
                 break;
             case 'priority':
-                // lesa NOT IMPLEMENTED YET
+                // Not implemented yet
+                mainWindow.webContents.send('process-action-result', {
+                    success: false,
+                    error: 'Priority change not implemented yet',
+                    action,
+                    pid
+                });
                 break;
         }
     } catch (error) {
         console.error(`Error performing action ${action} on process ${pid}:`, error);
+        mainWindow.webContents.send('process-action-result', {
+            success: false,
+            error: error.message,
+            action,
+            pid
+        });
     }
 }
 
