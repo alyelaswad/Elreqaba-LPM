@@ -1,6 +1,6 @@
 use cursive::align::HAlign;
 use cursive::traits::*;
-use cursive::views::{Dialog, TextView, ScrollView, LinearLayout, DummyView, SelectView};
+use cursive::views::{Dialog, TextView, ScrollView, LinearLayout, DummyView, SelectView, EditView};
 use cursive::Cursive;
 use cursive::CursiveExt;
 use cursive::view::Nameable;
@@ -18,6 +18,8 @@ use std::io::{BufRead, BufReader};
 use std::fs::File;
 use std::fs::read_to_string;
 use std::collections::HashMap;
+use cursive::theme::{BaseColor, Color, ColorStyle, Palette, PaletteColor, Theme, Effect, Style};
+use cursive::utils::markup::StyledString;
 
 #[derive(Clone, Debug)]
 pub struct Process {
@@ -43,6 +45,14 @@ pub enum BasicColumn {
     START,
     STATUS,
     PRIORITY,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum FilterType {
+    PID,
+    PPID,
+    USER,
+    STATUS,
 }
 
 impl TableViewItem<BasicColumn> for Process {
@@ -84,9 +94,26 @@ impl TableViewItem<BasicColumn> for Process {
 static TUI_RUNNING: AtomicBool = AtomicBool::new(true);
 static UPDATES_PAUSED: AtomicBool = AtomicBool::new(false);
 
-// Create a singleton for the System
+// Add filter state tracking
+#[derive(Clone)]
+struct FilterState {
+    filter_type: Option<FilterType>,
+    filter_value: String,
+}
+
+impl Default for FilterState {
+    fn default() -> Self {
+        FilterState {
+            filter_type: None,
+            filter_value: String::new(),
+        }
+    }
+}
+
+// Create a singleton for the System and filter state
 lazy_static! {
     static ref SYSTEM: Mutex<System> = Mutex::new(System::new_all());
+    static ref CURRENT_FILTER: Mutex<FilterState> = Mutex::new(FilterState::default());
 }
 
 #[derive(Clone)]
@@ -113,6 +140,9 @@ impl Default for SysStats {
         }
     }
 }
+
+// Add a static flag to track if the tree view is open
+static TREE_VIEW_OPEN: AtomicBool = AtomicBool::new(false);
 
 fn act_on_selected_process<F>(siv: &mut Cursive, action: F, action_name: &str)
 where
@@ -490,8 +520,106 @@ fn get_system_info() -> String {
     )
 }
 
-fn custom_theme_from_cursive(_siv: &Cursive) -> cursive::theme::Theme {
-    cursive::theme::Theme::default()
+// Function to get a single-line, full-width system info bar
+fn get_system_info_bar(width: usize) -> StyledString {
+    let mut system = SYSTEM.lock().unwrap();
+    system.refresh_all();
+    let cpu_name = std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|content| {
+            content.lines()
+                .find(|line| line.starts_with("model name"))
+                .and_then(|line| line.split(':').nth(1))
+                .map(|name| name.trim().to_string())
+        })
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+    let cpu_usage = system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / system.cpus().len() as f32;
+    let total_memory = system.total_memory() as f32 / 1024.0 / 1024.0;
+    let used_memory = system.used_memory() as f32 / 1024.0 / 1024.0;
+    let swap = system.total_swap() as f32 / 1024.0 / 1024.0;
+    let uptime = System::uptime();
+    let process_count = system.processes().len();
+    let freq = std::fs::read_to_string("/proc/cpuinfo")
+        .map(|content| {
+            let freqs: Vec<f64> = content.lines()
+                .filter(|line| line.starts_with("cpu MHz"))
+                .filter_map(|line| line.split(':').nth(1)?.trim().parse().ok())
+                .collect();
+            freqs.iter().sum::<f64>() / freqs.len().max(1) as f64
+        })
+        .unwrap_or_default();
+    let temp = 20.0; // Placeholder, you can add real temp reading if available
+    let info = format!(
+        "CPU: {} | Usage: {:.1}% | Freq: {:.0}MHz | Mem: {:.1}/{:.1}MB | Swap: {:.1}MB | Uptime: {}d {:02}h {:02}m | Procs: {}",
+        cpu_name,
+        cpu_usage,
+        freq,
+        used_memory,
+        total_memory,
+        swap,
+        uptime / 86400,
+        (uptime % 86400) / 3600,
+        (uptime % 3600) / 60,
+        process_count
+    );
+    let padded = if info.len() < width {
+        let mut s = info;
+        s.extend(std::iter::repeat(' ').take(width - s.len()));
+        s
+    } else {
+        info.chars().take(width).collect()
+    };
+    StyledString::styled(
+        padded,
+        Style::from(ColorStyle::new(Color::Dark(BaseColor::Magenta), Color::Dark(BaseColor::Black))).combine(Effect::Bold)
+    )
+}
+
+// Function to get a styled keybindings bar
+fn get_keybindings_bar() -> StyledString {
+    use cursive::utils::markup::StyledString;
+    let mut bar = StyledString::new();
+
+    // Helper to style shortcut keys
+    let key = |k: &str| StyledString::styled(
+        k,
+        Style::from(ColorStyle::new(Color::Light(BaseColor::Cyan), Color::Dark(BaseColor::Magenta))).combine(Effect::Bold)
+    );
+    let text = |t: &str| StyledString::styled(
+        t,
+        Style::from(ColorStyle::new(Color::Light(BaseColor::White), Color::Dark(BaseColor::Magenta)))
+    );
+
+    bar.append_plain("┃ ");
+    bar.append(key("Exit <q>"));
+    bar.append_plain("  ");
+    bar.append(key("Pause/Unpause <u>"));
+    bar.append_plain("  ");
+    bar.append(key("Process Tree <t>"));
+    bar.append_plain("  ");
+    bar.append(key("Kill <k>"));
+    bar.append_plain("  ");
+    bar.append(key("Filter <f>"));
+    bar.append_plain("  ");
+    bar.append(key("Change Nice <n>"));
+    bar.append_plain("  ");
+    bar.append(key("Help <h>"));
+    bar.append_plain(" ┃");
+
+    bar
+}
+
+// Custom theme for a modern TUI look
+fn custom_theme() -> Theme {
+    let mut theme = Theme::default();
+    theme.palette[PaletteColor::Background] = Color::Dark(BaseColor::Black);
+    theme.palette[PaletteColor::View] = Color::Dark(BaseColor::Black);
+    theme.palette[PaletteColor::Primary] = Color::Light(BaseColor::White);
+    theme.palette[PaletteColor::TitlePrimary] = Color::Light(BaseColor::Magenta);
+    theme.palette[PaletteColor::Highlight] = Color::Dark(BaseColor::Magenta);
+    theme.palette[PaletteColor::HighlightText] = Color::Light(BaseColor::White);
+    theme.palette[PaletteColor::Secondary] = Color::Dark(BaseColor::Magenta);
+    theme
 }
 
 #[derive(Clone)]
@@ -567,38 +695,26 @@ fn format_process_tree(node: &ProcessNode, prefix: &str, is_last: bool, output: 
     }
 }
 
-fn show_process_tree(siv: &mut Cursive) {
+fn show_process_tree_fullscreen(siv: &mut Cursive) {
     let processes = get_processes();
     let tree = build_process_tree(&processes);
-    
     let mut tree_text = String::new();
     for (i, root) in tree.iter().enumerate() {
         format_process_tree(root, "", i == tree.len() - 1, &mut tree_text);
     }
-    
     let tree_view = ScrollView::new(
         TextView::new(tree_text)
             .with_name("tree_content")
-            .fixed_width(100)
-    ).fixed_height(20);
-    
-    let dialog = Dialog::around(tree_view)
-        .title("Process Tree")
-        .button("Refresh", |s| {
-            // Refresh the tree content
-            let processes = get_processes();
-            let tree = build_process_tree(&processes);
-            let mut tree_text = String::new();
-            for (i, root) in tree.iter().enumerate() {
-                format_process_tree(root, "", i == tree.len() - 1, &mut tree_text);
-            }
-            if let Some(mut view) = s.find_name::<TextView>("tree_content") {
-                view.set_content(tree_text);
-            }
-        })
-        .button("Close", |s| {s.pop_layer();});
-    
-    siv.add_layer(dialog);
+            .full_width()
+    ).full_screen();
+    siv.add_fullscreen_layer(tree_view.with_name("tree_layer"));
+    TREE_VIEW_OPEN.store(true, AtomicOrdering::SeqCst);
+}
+
+fn close_process_tree_fullscreen(siv: &mut Cursive) {
+    // Remove the top layer (tree view)
+    siv.pop_layer();
+    TREE_VIEW_OPEN.store(false, AtomicOrdering::SeqCst);
 }
 
 pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Process>) {
@@ -614,8 +730,15 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
     let initial_accurate_processes = get_processes();
     let processes = Arc::new(Mutex::new(initial_accurate_processes));
     let mut siv = Cursive::default();
-    let theme = custom_theme_from_cursive(&siv);
+    let theme = custom_theme();
     siv.set_theme(theme);
+
+    // Get terminal width
+    let width = siv.screen_size().x.max(80) as usize;
+    // Top bar
+    let sysinfo_block = TextView::new(get_system_info_block(width)).with_name("sysinfo_block").fixed_height(4);
+    // Bottom bar
+    let bottom_bar = TextView::new(get_keybindings_bar()).with_name("bottom_bar").fixed_height(1);
 
     siv.add_global_callback('q', |s| {
         TUI_RUNNING.store(false, AtomicOrdering::SeqCst);
@@ -645,13 +768,13 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
         match col_name.as_str() {
             "PID" => table = table.column(BasicColumn::PID, "PID", |c| c.align(HAlign::Right).width(6)),
             "PPID" => table = table.column(BasicColumn::PPID, "PPID", |c| c.align(HAlign::Right).width(6)),
-            "USER" => table = table.column(BasicColumn::USER, "USER", |c| c.align(HAlign::Left).width(10)),
+            "USER" => table = table.column(BasicColumn::USER, "OWNER", |c| c.align(HAlign::Left).width(10)),
             "CPU" => table = table.column(BasicColumn::CPU, "CPU %", |c| c.width(8).align(HAlign::Right)),
-            "MEM" => table = table.column(BasicColumn::MEM, "MEM MB", |c| c.width(8).align(HAlign::Right)),
-            "NI" => table = table.column(BasicColumn::PRIORITY, "NI", |c| c.align(HAlign::Right).width(4)),
+            "MEM" => table = table.column(BasicColumn::MEM, "MEM %", |c| c.width(8).align(HAlign::Right)),
+            "NI" => table = table.column(BasicColumn::PRIORITY, "PRI", |c| c.align(HAlign::Right).width(4)),
             "CMD" => table = table.column(BasicColumn::CMD, "CMD", |c| c.align(HAlign::Right).width(30)),
-            "START" => table = table.column(BasicColumn::START, "START TIME", |c| c.align(HAlign::Left).width(10)),
-            "STATUS" => table = table.column(BasicColumn::STATUS, "STATUS", |c| c.align(HAlign::Left).width(15)),
+            "START" => table = table.column(BasicColumn::START, "STARTED", |c| c.align(HAlign::Left).width(10)),
+            "STATUS" => table = table.column(BasicColumn::STATUS, "STATE", |c| c.align(HAlign::Left).width(15)),
             _ => println!("Invalid column: {}", col_name),
         }
     }
@@ -684,13 +807,13 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
     let table_with_name = table.with_name("table").full_screen();
     let scrollable_table = ScrollView::new(table_with_name);
 
-    siv.add_layer(
-        Dialog::around(scrollable_table)
-            .title("Processes (Running) - Press 'u' to toggle updates, 'q' to quit")
-            .button("Quit", |s| s.quit())
-            .h_align(HAlign::Right) // Aligns the button row to the right
-            .with_name("main_dialog")
-    );
+    // Compose the main layout with system info block, table, and bottom bar
+    let main_layout = LinearLayout::vertical()
+        .child(sysinfo_block)
+        .child(scrollable_table)
+        .child(bottom_bar);
+
+    siv.add_fullscreen_layer(main_layout);
 
     siv.add_global_callback('h', move |s| {
         s.add_layer(
@@ -704,6 +827,8 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
                  - 'P' to pause the selected process\n\
                  - 'R' to resume the selected process\n\
                  - 'N' to change process priority (nice value)\n\
+                 - 'f' to filter/clear filter processes\n\
+                 - 't' to show process tree\n\
                  - 'h' for help"
             ))
             .title("Help")
@@ -732,7 +857,25 @@ siv.add_global_callback('n', |s| {
 
     // Add the 't' key binding for process tree
     siv.add_global_callback('t', |s| {
-        show_process_tree(s);
+        if TREE_VIEW_OPEN.load(AtomicOrdering::SeqCst) {
+            close_process_tree_fullscreen(s);
+        } else {
+            show_process_tree_fullscreen(s);
+        }
+    });
+
+    // Add filter key binding
+    siv.add_global_callback('f', |s| {
+        let has_filter = {
+            let filter_state = CURRENT_FILTER.lock().unwrap();
+            filter_state.filter_type.is_some()
+        };
+        
+        if has_filter {
+            clear_filter(s);
+        } else {
+            show_filter_dialog(s);
+        }
     });
 
     let processes_clone = Arc::clone(&processes);
@@ -751,7 +894,23 @@ siv.add_global_callback('n', |s| {
                 sink.send(Box::new(move |s| {
                     if let Some(mut table_view) = s.find_name::<TableView<Process, BasicColumn>>("table") {
                         let current_processes = processes_for_closure.lock().unwrap().clone();
-                        table_view.set_items(current_processes);
+                        
+                        // Apply current filter if one exists
+                        let filtered_processes = {
+                            let filter_state = CURRENT_FILTER.lock().unwrap();
+                            if let Some(filter_type) = filter_state.filter_type {
+                                filter_processes(&current_processes, filter_type, &filter_state.filter_value)
+                            } else {
+                                current_processes
+                            }
+                        };
+                        
+                        table_view.set_items(filtered_processes);
+                    }
+                    // Update system info bar
+                    let width = s.screen_size().x.max(80) as usize;
+                    if let Some(mut sysinfo_view) = s.find_name::<TextView>("sysinfo_block") {
+                        sysinfo_view.set_content(get_system_info_block(width));
                     }
                 })).ok();
             }
@@ -788,4 +947,148 @@ fn show_system_info_dialog(siv: &mut Cursive) {
             thread::sleep(Duration::from_millis(500));
         }
     });
+}
+
+fn filter_processes(processes: &[Process], filter_type: FilterType, filter_value: &str) -> Vec<Process> {
+    processes.iter()
+        .filter(|process| {
+            match filter_type {
+                FilterType::PID => {
+                    if let Ok(pid) = filter_value.parse::<u32>() {
+                        process.pid == pid
+                    } else {
+                        false
+                    }
+                },
+                FilterType::PPID => {
+                    if let Ok(ppid) = filter_value.parse::<u32>() {
+                        process.ppid.map_or(false, |p| p == ppid)
+                    } else {
+                        false
+                    }
+                },
+                FilterType::USER => process.user.as_ref().map_or(false, |user| user.contains(filter_value)),
+                FilterType::STATUS => format!("{:?}", process.process_state).contains(filter_value),
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+fn show_filter_dialog(siv: &mut Cursive) {
+    let dialog = Dialog::around(
+        LinearLayout::vertical()
+            .child(TextView::new("Select filter type:"))
+            .child(SelectView::new()
+                .item("PID", FilterType::PID)
+                .item("PPID", FilterType::PPID)
+                .item("User", FilterType::USER)
+                .item("Status", FilterType::STATUS)
+                .on_submit(move |s, &filter_type| {
+                    s.pop_layer();
+                    show_filter_value_dialog(s, filter_type);
+                }))
+    )
+    .title("Filter Processes")
+    .button("Cancel", |s| { s.pop_layer(); });
+    
+    siv.add_layer(dialog);
+}
+
+fn show_filter_value_dialog(siv: &mut Cursive, filter_type: FilterType) {
+    let dialog = Dialog::around(
+        LinearLayout::vertical()
+            .child(TextView::new(format!("Enter filter value for {:?}:", filter_type)))
+            .child(DummyView)
+            .child(EditView::new()
+                .with_name("filter_value")
+                .fixed_width(20))
+    )
+    .title("Enter Filter Value")
+    .button("Apply", move |s| {
+        if let Some(mut view) = s.find_name::<EditView>("filter_value") {
+            let filter_value = view.get_content().to_string();
+            if let Some(mut table_view) = s.find_name::<TableView<Process, BasicColumn>>("table") {
+                let current_processes = get_processes();
+                let filtered_processes = filter_processes(&current_processes, filter_type, &filter_value);
+                table_view.set_items(filtered_processes);
+                
+                // Update the current filter state
+                let mut filter_state = CURRENT_FILTER.lock().unwrap();
+                filter_state.filter_type = Some(filter_type);
+                filter_state.filter_value = filter_value;
+            }
+            s.pop_layer();
+        }
+    })
+    .button("Cancel", |s| { s.pop_layer(); });
+    
+    siv.add_layer(dialog);
+}
+
+fn clear_filter(siv: &mut Cursive) {
+    if let Some(mut table_view) = siv.find_name::<TableView<Process, BasicColumn>>("table") {
+        let current_processes = get_processes();
+        table_view.set_items(current_processes);
+        
+        // Clear the filter state
+        {
+            let mut filter_state = CURRENT_FILTER.lock().unwrap();
+            filter_state.filter_type = None;
+            filter_state.filter_value.clear();
+        }
+    }
+}
+
+fn get_system_info_block(width: usize) -> StyledString {
+    let mut system = SYSTEM.lock().unwrap();
+    system.refresh_all();
+
+    let cpu_name = std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|content| {
+            content.lines()
+                .find(|line| line.starts_with("model name"))
+                .and_then(|line| line.split(':').nth(1))
+                .map(|name| name.trim().to_string())
+        })
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+
+    let cpu_usage = system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / system.cpus().len() as f32;
+    let total_memory = system.total_memory() as f32 / 1024.0 / 1024.0;
+    let used_memory = system.used_memory() as f32 / 1024.0 / 1024.0;
+    let swap = system.total_swap() as f32 / 1024.0 / 1024.0;
+    let uptime = System::uptime();
+    let process_count = system.processes().len();
+    let freq = std::fs::read_to_string("/proc/cpuinfo")
+        .map(|content| {
+            let freqs: Vec<f64> = content.lines()
+                .filter(|line| line.starts_with("cpu MHz"))
+                .filter_map(|line| line.split(':').nth(1)?.trim().parse().ok())
+                .collect();
+            freqs.iter().sum::<f64>() / freqs.len().max(1) as f64
+        })
+        .unwrap_or_default();
+    let physical_cores = num_cpus::get_physical();
+    let logical_cores = num_cpus::get();
+
+    let lines = vec![
+        format!("CPU Name: {:<30} | Freq: {:>6.0} MHz | Usage: {:>5.1}% | Cores: {} ({} phys)", cpu_name, freq, cpu_usage, logical_cores, physical_cores),
+        format!("Memory: {:>7.0}/{:<7.0} MB | Swap: {:>7.0} MB", used_memory, total_memory, swap),
+        format!("Uptime: {}d {:02}h {:02}m | Procs: {}", uptime / 86400, (uptime % 86400) / 3600, (uptime % 3600) / 60, process_count),
+    ];
+
+    let centered = lines
+        .into_iter()
+        .map(|line| {
+            let pad = (width.saturating_sub(line.len())) / 2;
+            format!("{}{}", " ".repeat(pad), line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    StyledString::styled(
+        centered,
+        Style::from(ColorStyle::new(Color::Dark(BaseColor::Magenta), Color::Dark(BaseColor::Black))).combine(Effect::Bold)
+    )
 }
