@@ -415,7 +415,7 @@ fn verify_nice_value(pid: u32) -> Option<i32> {
     get_process_nice(pid)
 }
 
-// Add this function to get real-time CPU frequency
+#[cfg(target_os = "linux")]
 fn get_cpu_frequencies() -> Vec<f64> {
     let mut frequencies = Vec::new();
     let cpu_count = num_cpus::get();
@@ -426,7 +426,6 @@ fn get_cpu_frequencies() -> Vec<f64> {
             let reader = BufReader::new(file);
             if let Some(Ok(line)) = reader.lines().next() {
                 if let Ok(freq) = line.trim().parse::<u64>() {
-                    // Convert KHz to GHz
                     frequencies.push(freq as f64 / 1_000_000.0);
                 }
             }
@@ -454,23 +453,32 @@ fn get_cpu_frequencies() -> Vec<f64> {
     frequencies
 }
 
-fn get_system_info() -> String {
-    let mut system = SYSTEM.lock().unwrap();
-    system.refresh_all();
+#[cfg(target_os = "windows")]
+fn get_cpu_frequencies() -> Vec<f64> {
+    let output = std::process::Command::new("powershell.exe")
+        .args(&[
+            "-Command",
+            "Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation | Where-Object {$_.Name -match '^[0-9]+$'} | Select-Object -ExpandProperty ProcessorFrequency"
+        ])
+        .output()
+        .expect("Failed to execute PowerShell");
 
-    // Get average CPU frequency across all cores
-    let freq = std::fs::read_to_string("/proc/cpuinfo")
-        .map(|content| {
-            let freqs: Vec<f64> = content.lines()
-                .filter(|line| line.starts_with("cpu MHz"))
-                .filter_map(|line| line.split(':').nth(1)?.trim().parse().ok())
-                .collect();
-            freqs.iter().sum::<f64>() / freqs.len().max(1) as f64
-        })
-        .unwrap_or_default();
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .lines()
+            .filter_map(|line| line.trim().parse::<f64>().ok())
+            .map(|mhz| mhz / 1000.0) // Convert MHz to GHz
+            .collect()
+    } else {
+        eprintln!("PowerShell failed: {}", String::from_utf8_lossy(&output.stderr));
+        vec![]
+    }
+}
 
-    // Get CPU name
-    let cpu_name = std::fs::read_to_string("/proc/cpuinfo")
+// Add this new function after the get_cpu_frequencies functions
+fn get_cpu_name() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
         .ok()
         .and_then(|content| {
             content.lines()
@@ -478,13 +486,49 @@ fn get_system_info() -> String {
                 .and_then(|line| line.split(':').nth(1))
                 .map(|name| name.trim().to_string())
         })
-        .unwrap_or_else(|| "Unknown CPU".to_string());
+        .unwrap_or_else(|| "Unknown CPU".to_string())
+}
 
-    let cpu_usage = system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / system.cpus().len() as f32;
-    let total_memory = system.total_memory() as f32 / 1024.0/ 1024.0/ 1024.0;
-    let used_memory = system.used_memory() as f32 / 1024.0/ 1024.0/ 1024.0;
-    let available_memory = system.available_memory() as f32 / 1024.0/ 1024.0/ 1024.0;
-    let uptime = System::uptime();
+// Add this new struct and function after get_cpu_name
+#[derive(Clone)]
+struct SystemInfo {
+    cpu_usage: f32,
+    total_memory: f32,
+    used_memory: f32,
+    available_memory: f32,
+    swap: f32,
+    uptime: u64,
+    process_count: usize,
+    physical_cores: usize,
+    logical_cores: usize,
+}
+
+fn get_system_info() -> SystemInfo {
+    let mut system = SYSTEM.lock().unwrap();
+    system.refresh_all();
+
+    SystemInfo {
+        cpu_usage: system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / system.cpus().len() as f32,
+        total_memory: system.total_memory() as f32 / 1024.0 / 1024.0,
+        used_memory: system.used_memory() as f32 / 1024.0 / 1024.0,
+        available_memory: system.available_memory() as f32 / 1024.0 / 1024.0,
+        swap: system.total_swap() as f32 / 1024.0 / 1024.0,
+        uptime: System::uptime(),
+        process_count: system.processes().len(),
+        physical_cores: num_cpus::get_physical(),
+        logical_cores: num_cpus::get(),
+    }
+}
+
+fn get_system_info() -> String {
+    let sys_info = get_system_info();
+    let freqs = get_cpu_frequencies();
+    let freq = if !freqs.is_empty() {
+        freqs.iter().sum::<f64>() / freqs.len() as f64
+    } else {
+        0.0
+    };
+    let cpu_name = get_cpu_name();
 
     format!(
         "CPU Information:\n\
@@ -504,73 +548,52 @@ fn get_system_info() -> String {
          - Number of Processes: {}\n\
          - System Uptime: {}d {}h {}m {}s",
         cpu_name,
-        freq,
-        cpu_usage,
-        num_cpus::get_physical(),
-        num_cpus::get(),
-        total_memory,
-        used_memory,
-        available_memory,
-        (used_memory / total_memory) * 100.0,
-        system.processes().len(),
-        uptime / 86400,
-        (uptime % 86400) / 3600,
-        (uptime % 3600) / 60,
-        uptime % 60
+        freq * 1000.0,
+        sys_info.cpu_usage,
+        sys_info.physical_cores,
+        sys_info.logical_cores,
+        sys_info.total_memory,
+        sys_info.used_memory,
+        sys_info.available_memory,
+        (sys_info.used_memory / sys_info.total_memory) * 100.0,
+        sys_info.process_count,
+        sys_info.uptime / 86400,
+        (sys_info.uptime % 86400) / 3600,
+        (sys_info.uptime % 3600) / 60,
+        sys_info.uptime % 60
     )
 }
 
-// Function to get a single-line, full-width system info bar
-fn get_system_info_bar(width: usize) -> StyledString {
-    let mut system = SYSTEM.lock().unwrap();
-    system.refresh_all();
-    let cpu_name = std::fs::read_to_string("/proc/cpuinfo")
-        .ok()
-        .and_then(|content| {
-            content.lines()
-                .find(|line| line.starts_with("model name"))
-                .and_then(|line| line.split(':').nth(1))
-                .map(|name| name.trim().to_string())
-        })
-        .unwrap_or_else(|| "Unknown CPU".to_string());
-    let cpu_usage = system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / system.cpus().len() as f32;
-    let total_memory = system.total_memory() as f32 / 1024.0 / 1024.0;
-    let used_memory = system.used_memory() as f32 / 1024.0 / 1024.0;
-    let swap = system.total_swap() as f32 / 1024.0 / 1024.0;
-    let uptime = System::uptime();
-    let process_count = system.processes().len();
-    let freq = std::fs::read_to_string("/proc/cpuinfo")
-        .map(|content| {
-            let freqs: Vec<f64> = content.lines()
-                .filter(|line| line.starts_with("cpu MHz"))
-                .filter_map(|line| line.split(':').nth(1)?.trim().parse().ok())
-                .collect();
-            freqs.iter().sum::<f64>() / freqs.len().max(1) as f64
-        })
-        .unwrap_or_default();
-    let temp = 20.0; // Placeholder, you can add real temp reading if available
-    let info = format!(
-        "CPU: {} | Usage: {:.1}% | Freq: {:.0}MHz | Mem: {:.1}/{:.1}MB | Swap: {:.1}MB | Uptime: {}d {:02}h {:02}m | Procs: {}",
-        cpu_name,
-        cpu_usage,
-        freq,
-        used_memory,
-        total_memory,
-        swap,
-        uptime / 86400,
-        (uptime % 86400) / 3600,
-        (uptime % 3600) / 60,
-        process_count
-    );
-    let padded = if info.len() < width {
-        let mut s = info;
-        s.extend(std::iter::repeat(' ').take(width - s.len()));
-        s
+fn get_system_info_block(width: usize) -> StyledString {
+    let sys_info = get_system_info();
+    let cpu_name = get_cpu_name();
+    let freqs = get_cpu_frequencies();
+    let freq = if !freqs.is_empty() {
+        freqs.iter().sum::<f64>() / freqs.len() as f64
     } else {
-        info.chars().take(width).collect()
+        0.0
     };
+
+    let lines = vec![
+        format!("CPU Name: {:<30} | Freq: {:>6.0} MHz | Usage: {:>5.1}% | Cores: {} ({} phys)", 
+            cpu_name, freq * 1000.0, sys_info.cpu_usage, sys_info.logical_cores, sys_info.physical_cores),
+        format!("Memory: {:>7.0}/{:<7.0} MB | Swap: {:>7.0} MB", 
+            sys_info.used_memory, sys_info.total_memory, sys_info.swap),
+        format!("Uptime: {}d {:02}h {:02}m | Procs: {}", 
+            sys_info.uptime / 86400, (sys_info.uptime % 86400) / 3600, (sys_info.uptime % 3600) / 60, sys_info.process_count),
+    ];
+
+    let centered = lines
+        .into_iter()
+        .map(|line| {
+            let pad = (width.saturating_sub(line.len())) / 2;
+            format!("{}{}", " ".repeat(pad), line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     StyledString::styled(
-        padded,
+        centered,
         Style::from(ColorStyle::new(Color::Dark(BaseColor::Magenta), Color::Dark(BaseColor::Black))).combine(Effect::Bold)
     )
 }
@@ -1038,57 +1061,4 @@ fn clear_filter(siv: &mut Cursive) {
             filter_state.filter_value.clear();
         }
     }
-}
-
-fn get_system_info_block(width: usize) -> StyledString {
-    let mut system = SYSTEM.lock().unwrap();
-    system.refresh_all();
-
-    let cpu_name = std::fs::read_to_string("/proc/cpuinfo")
-        .ok()
-        .and_then(|content| {
-            content.lines()
-                .find(|line| line.starts_with("model name"))
-                .and_then(|line| line.split(':').nth(1))
-                .map(|name| name.trim().to_string())
-        })
-        .unwrap_or_else(|| "Unknown CPU".to_string());
-
-    let cpu_usage = system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / system.cpus().len() as f32;
-    let total_memory = system.total_memory() as f32 / 1024.0 / 1024.0;
-    let used_memory = system.used_memory() as f32 / 1024.0 / 1024.0;
-    let swap = system.total_swap() as f32 / 1024.0 / 1024.0;
-    let uptime = System::uptime();
-    let process_count = system.processes().len();
-    let freq = std::fs::read_to_string("/proc/cpuinfo")
-        .map(|content| {
-            let freqs: Vec<f64> = content.lines()
-                .filter(|line| line.starts_with("cpu MHz"))
-                .filter_map(|line| line.split(':').nth(1)?.trim().parse().ok())
-                .collect();
-            freqs.iter().sum::<f64>() / freqs.len().max(1) as f64
-        })
-        .unwrap_or_default();
-    let physical_cores = num_cpus::get_physical();
-    let logical_cores = num_cpus::get();
-
-    let lines = vec![
-        format!("CPU Name: {:<30} | Freq: {:>6.0} MHz | Usage: {:>5.1}% | Cores: {} ({} phys)", cpu_name, freq, cpu_usage, logical_cores, physical_cores),
-        format!("Memory: {:>7.0}/{:<7.0} MB | Swap: {:>7.0} MB", used_memory, total_memory, swap),
-        format!("Uptime: {}d {:02}h {:02}m | Procs: {}", uptime / 86400, (uptime % 86400) / 3600, (uptime % 3600) / 60, process_count),
-    ];
-
-    let centered = lines
-        .into_iter()
-        .map(|line| {
-            let pad = (width.saturating_sub(line.len())) / 2;
-            format!("{}{}", " ".repeat(pad), line)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    StyledString::styled(
-        centered,
-        Style::from(ColorStyle::new(Color::Dark(BaseColor::Magenta), Color::Dark(BaseColor::Black))).combine(Effect::Bold)
-    )
 }
