@@ -3,10 +3,47 @@ const path = require('path');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
+const fs = require('fs');
 
 let mainWindow;
 let updateInterval;
 let trackedProcesses = new Set();
+
+async function getAppIconPath(processName) {
+    if (process.platform !== 'darwin') return null;
+    
+    try {
+        if (!processName.toLowerCase().endsWith('.app') && !processName.includes('.')) {
+            return null;
+        }
+
+        const appName = processName.endsWith('.app') ? 
+            processName : 
+            processName.split('.')[0] + '.app';
+
+        const { stdout } = await execPromise(`mdfind "kMDItemKind == 'Application' && kMDItemDisplayName == '${appName}'"`).catch(() => ({ stdout: '' }));
+        const appPath = stdout.trim().split('\n')[0];
+        
+        if (appPath) {
+            const iconPath = path.join(appPath, 'Contents', 'Resources', 'AppIcon.icns');
+            if (fs.existsSync(iconPath)) {
+                return iconPath;
+            }
+        }
+    } catch (error) {
+        return null;
+    }
+    return null;
+}
+
+async function getProcessCommand(pid) {
+    try {
+        const { stdout } = await execPromise(`ps -p ${pid} -o command=`);
+        return stdout.trim();
+    } catch (error) {
+        return null;
+    }
+}
 
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -23,33 +60,34 @@ function createWindow() {
 
 async function getProcesses() {
     try {
-        // Use a more detailed ps command that works on both macOS and Linux
         const { stdout } = await execPromise('ps -ax -o pid,pcpu,pmem,comm,state,command');
-        const processes = stdout.split('\n')
+        const processLines = stdout.split('\n')
             .slice(1) 
-            .filter(line => line.trim())
-            .map(line => {
+            .filter(line => line.trim());
+
+        const processPromises = processLines.map(async line => {
+            try {
                 const parts = line.trim().split(/\s+/);
                 const pid = parts[0];
                 const cpu = parts[1];
                 const mem = parts[2];
                 const comm = parts[3];
                 const state = parts[4];
-                const command = parts.slice(5).join(' ');
+                const command = await getProcessCommand(pid).catch(() => parts.slice(5).join(' '));
 
-                // Get a clean process name
-                let name;
-                if (command.includes('/')) {
+                let name = '';
+                if (command && command.includes('/')) {
                     // If command has a path, get the last part
-                    name = command.split('/').pop().split(' ')[0];
+                    const parts = command.split('/');
+                    name = parts[parts.length - 1].split(' ')[0];
                 } else {
-                    // Otherwise use the comm field but clean it
-                    name = comm.split('/').pop();
+                    name = comm && comm.includes('/') ? 
+                        comm.split('/').pop() : 
+                        comm;
                 }
 
-                // Clean up the name if it's still not good
                 if (!name || name === '' || name === '.' || name === 'ps') {
-                    name = comm;
+                    name = comm || 'Unknown';
                 }
                 
                 const stateMap = {
@@ -62,63 +100,84 @@ async function getProcesses() {
                     'D': 'Uninterruptible Sleep'
                 };
 
-                let processState = stateMap[state[0]] || state;
-                // Add additional state information
-                if (state.includes('+')) processState += ' (Foreground)';
-                if (state.includes('s')) processState += ' (Session Leader)';
-                if (state.includes('<')) processState += ' (High Priority)';
-                if (state.includes('N')) processState += ' (Low Priority)';
+                let processState = state && stateMap[state[0]] ? stateMap[state[0]] : state;
+                if (state) {
+                    if (state.includes('+')) processState += ' (Foreground)';
+                    if (state.includes('s')) processState += ' (Session Leader)';
+                    if (state.includes('<')) processState += ' (High Priority)';
+                    if (state.includes('N')) processState += ' (Low Priority)';
+                }
+
+                let iconPath = null;
+                try {
+                    iconPath = await getAppIconPath(name);
+                } catch (error) {
+                    iconPath = null;
+                }
 
                 return {
                     pid: parseInt(pid),
-                    cpu: parseFloat(cpu),
-                    memory: parseFloat(mem) * 1024 * 1024, // Convert percentage to bytes
+                    cpu: parseFloat(cpu) || 0,
+                    memory: parseFloat(mem) * 1024 * 1024 || 0, // Convert percentage to bytes
                     name,
-                    state: processState,
-                    command
+                    state: processState || 'Unknown',
+                    command: command || '',
+                    iconPath
                 };
-            })
-            .filter(process => process.name && process.name.trim() !== '') // Filter out processes with empty names
-            .sort((a, b) => b.cpu - a.cpu)
-            .slice(0, 10); // Get top 10 processes
+            } catch (error) {
+                console.error('Error processing process line:', error);
+                return null;
+            }
+        });
 
-        // Get system metrics based on platform
+        const processes = (await Promise.all(processPromises))
+            .filter(process => process !== null && process.name && process.name.trim() !== '')
+            .sort((a, b) => b.cpu - a.cpu)
+            .slice(0, 50); // get top 50 processes for better grouping
+
         let totalMemory = 0;
         let usedMemory = 0;
         let cpuUsage = 0;
 
         if (process.platform === 'darwin') {
-            // macOS memory info
-            const { stdout: memInfo } = await execPromise('vm_stat');
-            const pageSize = 4096;
-            const memStats = {};
-            
-            memInfo.split('\n').forEach(line => {
-                const match = line.match(/^(.+):\s+(\d+)/);
-                if (match) {
-                    memStats[match[1]] = parseInt(match[2]) * pageSize;
-                }
-            });
+            try {
+                const { stdout: memInfo } = await execPromise('vm_stat');
+                const pageSize = 4096;
+                const memStats = {};
+                
+                memInfo.split('\n').forEach(line => {
+                    const match = line.match(/^(.+):\s+(\d+)/);
+                    if (match) {
+                        memStats[match[1]] = parseInt(match[2]) * pageSize;
+                    }
+                });
 
-            totalMemory = memStats['Pages free'] + memStats['Pages active'] + memStats['Pages inactive'] + memStats['Pages wired down'];
-            usedMemory = totalMemory - memStats['Pages free'];
+                totalMemory = memStats['Pages free'] + memStats['Pages active'] + memStats['Pages inactive'] + memStats['Pages wired down'];
+                usedMemory = totalMemory - memStats['Pages free'];
 
-            // macOS CPU info
-            const { stdout: cpuInfo } = await execPromise("top -l 1 -n 0 | grep 'CPU usage'");
-            const cpuMatch = cpuInfo.match(/(\d+\.\d+)% user/);
-            cpuUsage = cpuMatch ? parseFloat(cpuMatch[1]) : 0;
+                // macOS CPU info
+                const { stdout: cpuInfo } = await execPromise("top -l 1 -n 0 | grep 'CPU usage'");
+                const cpuMatch = cpuInfo.match(/(\d+\.\d+)% user/);
+                cpuUsage = cpuMatch ? parseFloat(cpuMatch[1]) : 0;
+            } catch (error) {
+                console.error('Error getting system metrics:', error);
+            }
         } else {
-            // Linux memory info
-            const { stdout: memInfo } = await execPromise('free -b');
-            const memLines = memInfo.split('\n');
-            const memParts = memLines[1].split(/\s+/);
-            totalMemory = parseInt(memParts[1]);
-            usedMemory = parseInt(memParts[2]);
+            try {
+                // Linux memory info
+                const { stdout: memInfo } = await execPromise('free -b');
+                const memLines = memInfo.split('\n');
+                const memParts = memLines[1].split(/\s+/);
+                totalMemory = parseInt(memParts[1]);
+                usedMemory = parseInt(memParts[2]);
 
-            // Linux CPU info
-            const { stdout: cpuInfo } = await execPromise("top -bn1 | grep '%Cpu'");
-            const cpuParts = cpuInfo.split(/\s+/);
-            cpuUsage = parseFloat(cpuParts[1]);
+                // Linux CPU info
+                const { stdout: cpuInfo } = await execPromise("top -bn1 | grep '%Cpu'");
+                const cpuParts = cpuInfo.split(/\s+/);
+                cpuUsage = parseFloat(cpuParts[1]);
+            } catch (error) {
+                console.error('Error getting system metrics:', error);
+            }
         }
 
         return {
@@ -174,11 +233,11 @@ async function getTrackedProcesses() {
                         command
                     });
                 } else {
-                    // Process doesn't exist anymore, mark for removal
+                    // process doesn't exist anymore, mark for removal
                     processesToRemove.add(pid);
                 }
             } catch (error) {
-                // Process doesn't exist or error occurred, mark for removal
+                //process doesn't exist or error occurred, mark for removal
                 processesToRemove.add(pid);
             }
         }
@@ -195,12 +254,24 @@ async function getTrackedProcesses() {
     }
 }
 
-// Drop down menu options ------------------------------------------------------------
+// drop down menu 
 async function handleProcessAction(action, pid) {
     try {
         switch (action) {
             case 'kill':
-                await execPromise(`kill -9 ${pid}`);
+                try {
+                    // First try normal kill
+                    await execPromise(`kill -9 ${pid}`);
+                } catch (error) {
+                    console.log(`Normal kill failed for PID ${pid}, error:`, error);
+                    // If normal kill fails, try with sudo
+                    try {
+                        await execPromise(`sudo -n kill -9 ${pid}`);
+                    } catch (sudoError) {
+                        console.log(`Sudo kill failed for PID ${pid}, error:`, sudoError);
+                        throw new Error(`Cannot terminate process ${pid}. This may be a system process that requires elevated privileges.`);
+                    }
+                }
                 mainWindow.webContents.send('process-action-result', {
                     success: true,
                     action,

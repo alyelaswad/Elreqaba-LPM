@@ -259,13 +259,12 @@
         }
 
         .button {
-            padding: 10px 20px;
-            border: none;
+            padding: 8px 16px;
             border-radius: 8px;
-            cursor: pointer;
             font-weight: 500;
+            cursor: pointer;
             transition: all 0.2s;
-            font-size: 14px;
+            border: none;
             display: flex;
             align-items: center;
             gap: 8px;
@@ -278,18 +277,92 @@
 
         .button-primary:hover {
             background-color: var(--accent-hover);
-            transform: translateY(-1px);
-            box-shadow: var(--shadow-md);
         }
 
         .button-secondary {
             background-color: var(--bg-tertiary);
-            color: var(--text-primary);
+            color: var(--text-secondary);
         }
 
         .button-secondary:hover {
-            background-color: var(--border-color);
+            background-color: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .group-container {
+            margin-bottom: 16px;
+            background-color: var(--bg-primary);
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: var(--shadow-sm);
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .group-container .process-table {
+            margin-top: 8px;
+            background-color: var(--bg-secondary);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .group-container .process-row:last-child td {
+            border-bottom: none;
+        }
+
+        .group-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background-color: var(--bg-tertiary);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            transition: all 0.2s;
+        }
+
+        .group-header:hover {
+            background-color: var(--bg-secondary);
             transform: translateY(-1px);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .group-title {
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 1.1em;
+        }
+
+        .group-stats {
+            margin-left: auto;
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            display: flex;
+            gap: 16px;
+        }
+
+        .focus-mode {
+            background-color: rgba(59, 130, 246, 0.1);
+        }
+
+        .focus-mode .process-row {
+            opacity: 0.5;
+            transition: opacity 0.2s;
+        }
+
+        .focus-mode .process-row.focused {
+            opacity: 1;
+        }
+
+        .starter-app-warning {
+            background-color: #fef2f2;
+            color: #991b1b;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            animation: fadeIn 0.3s ease-out;
         }
 
         .graphs-container {
@@ -575,6 +648,54 @@
         [data-theme="dark"] .chart-row {
             background-color: var(--bg-primary);
         }
+
+        .group-icon {
+            width: 24px;
+            height: 24px;
+            object-fit: contain;
+            border-radius: 6px;
+            background-color: var(--bg-secondary);
+            padding: 2px;
+        }
+
+        .group-icon-placeholder {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: var(--bg-secondary);
+            border-radius: 6px;
+            font-size: 16px;
+        }
+
+        @keyframes fadeOut {
+            from { opacity: 1; transform: translateY(0); }
+            to { opacity: 0; transform: translateY(10px); }
+        }
+
+        .starter-app-warning {
+            background-color: #fef2f2;
+            color: #991b1b;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: fadeIn 0.3s ease-out;
+            transition: background-color 0.3s ease;
+        }
+
+        .starter-app-warning button {
+            padding: 6px 12px;
+            font-size: 0.9em;
+        }
+
+        .starter-app-warning button:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -582,6 +703,12 @@
         <div class="header">
             <div class="title">الرقابة العامة تحت إشراف الكوماندور عمرو القاضى الميخور ديل موندو</div>
             <div class="controls">
+                <button class="button button-secondary" id="groupButton">
+                    <span>📊</span> Group Processes
+                </button>
+                <button class="button button-secondary" id="focusModeButton">
+                    <span>🎯</span> Focus Mode
+                </button>
                 <button class="theme-toggle" id="themeToggle">🌙</button>
                 <button class="button button-secondary" id="pauseUpdate">
                     <span class="icon">⏸️</span>
@@ -681,6 +808,11 @@
         let memoryHistory = [];
         let processColors = new Map();
         let hiddenDatasets = new Map();
+        let isGrouped = false;
+        let isFocusMode = false;
+        let groupedProcesses = new Map();
+        let starterAppTimers = new Map();
+        const STARTER_APP_TIMEOUT = 30000; // 30 seconds for testing (change to 1800000 for 30 minutes in production)
 
         // Define a color palette with distinct colors
         const DISTINCT_COLORS = [
@@ -718,24 +850,35 @@
         }
 
         function updateProcessList(processes) {
-            const tbody = document.getElementById('processList');
-            tbody.innerHTML = '';
-
             if (!processes || !Array.isArray(processes)) {
                 console.error('Invalid processes data received:', processes);
                 return;
             }
 
-            if (processes.length === 0) {
-                const row = document.createElement('tr');
-                row.innerHTML = '<td colspan="5" style="text-align: center;">No processes found</td>';
-                tbody.appendChild(row);
-                return;
-            }
+            checkStarterApps(processes);
 
-            processes.forEach(process => {
-                tbody.appendChild(createProcessRow(process));
-            });
+            if (isGrouped) {
+                const groups = groupProcesses(processes);
+                renderGroupedProcesses(groups);
+            } else {
+                const tbody = document.getElementById('processList');
+                tbody.innerHTML = '';
+                
+                if (processes.length === 0) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = '<td colspan="6" style="text-align: center;">No processes found</td>';
+                    tbody.appendChild(row);
+                    return;
+                }
+
+                processes.forEach(process => {
+                    const row = createProcessRow(process);
+                    if (isFocusMode) {
+                        row.classList.toggle('focused', process.cpu > 5); // Focus on processes using more than 5% CPU
+                    }
+                    tbody.appendChild(row);
+                });
+            }
         }
 
         function getColorForProcess(processName) {
@@ -1527,16 +1670,64 @@
         // Handle action clicks
         function handleAction(action, pid) {
             console.log('Action:', action, 'PID:', pid);
+            
+            // Find any dropdown menu and remove it
+            document.querySelectorAll('.dropdown-menu').forEach(menu => {
+                if (document.body.contains(menu)) {
+                    document.body.removeChild(menu);
+                }
+            });
+
+            // Send the action to main process
             ipcRenderer.send('process-action', {
                 action,
                 pid: pid
             });
             
-            // Hide the dropdown after action
-            document.getElementById(`dropdown-${pid}`).style.display = 'none';
+            ipcRenderer.once('process-action-result', (event, { success, error, action, pid }) => {
+                if (success) {
+                    // Show a brief success message
+                    const notification = document.createElement('div');
+                    notification.style.position = 'fixed';
+                    notification.style.bottom = '20px';
+                    notification.style.right = '20px';
+                    notification.style.backgroundColor = '#dcfce7';
+                    notification.style.color = '#166534';
+                    notification.style.padding = '12px 20px';
+                    notification.style.borderRadius = '8px';
+                    notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+                    notification.style.animation = 'fadeIn 0.3s ease-out';
+                    notification.innerHTML = `✅ Successfully ${action}ed process ${pid}`;
+                    
+                    document.body.appendChild(notification);
+                    setTimeout(() => {
+                        notification.style.animation = 'fadeOut 0.3s ease-out';
+                        setTimeout(() => notification.remove(), 300);
+                    }, 2000);
+
+                    ipcRenderer.send('refresh-processes');
+                } else {
+                    const notification = document.createElement('div');
+                    notification.style.position = 'fixed';
+                    notification.style.bottom = '20px';
+                    notification.style.right = '20px';
+                    notification.style.backgroundColor = '#fee2e2';
+                    notification.style.color = '#991b1b';
+                    notification.style.padding = '12px 20px';
+                    notification.style.borderRadius = '8px';
+                    notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+                    notification.style.animation = 'fadeIn 0.3s ease-out';
+                    notification.innerHTML = `❌ Failed to ${action} process ${pid}: ${error}`;
+                    
+                    document.body.appendChild(notification);
+                    setTimeout(() => {
+                        notification.style.animation = 'fadeOut 0.3s ease-out';
+                        setTimeout(() => notification.remove(), 300);
+                    }, 3000);
+                }
+            });
         }
 
-        // Close dropdowns when clicking outside
         document.addEventListener('click', (event) => {
             if (!event.target.closest('.dropdown-menu') && !event.target.closest('.action-button')) {
                 document.querySelectorAll('.dropdown-menu').forEach(menu => {
@@ -1545,103 +1736,274 @@
             }
         });
 
-        // Add feedback for process actions
-        ipcRenderer.on('process-action-result', (event, { success, error, action, pid }) => {
-            if (success) {
-                console.log(`Successfully performed ${action} on process ${pid}`);
-            } else {
-                console.error(`Failed to perform ${action} on process ${pid}:`, error);
-                // You could show this in the UI if desired
-            }
+        document.getElementById('groupButton').addEventListener('click', () => {
+            isGrouped = !isGrouped;
+            const button = document.getElementById('groupButton');
+            button.classList.toggle('button-primary');
+            button.innerHTML = isGrouped ? '<span>📊</span> Ungroup' : '<span>📊</span> Group Processes';
+            ipcRenderer.send('refresh-processes');
         });
 
-        // Add cleanup on tab switch
-        document.querySelectorAll('.tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.dropdown-menu').forEach(menu => {
-                    if (document.body.contains(menu)) {
-                        document.body.removeChild(menu);
-                    }
-                });
-            });
+        document.getElementById('focusModeButton').addEventListener('click', () => {
+            isFocusMode = !isFocusMode;
+            const button = document.getElementById('focusModeButton');
+            button.classList.toggle('button-primary');
+            document.querySelector('.process-table').classList.toggle('focus-mode');
+            ipcRenderer.send('refresh-processes');
         });
 
-        // Add back the theme toggle functionality for the main graphs
-        function updateChartsTheme() {
-            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-            const textColor = isDark ? '#f8fafc' : '#0f172a';
-            const gridColor = isDark ? '#334155' : '#e2e8f0';
-            
-            const commonOptions = {
-                scales: {
-                    x: {
-                        ticks: { color: textColor },
-                        grid: { color: gridColor }
-                    },
-                    y: {
-                        ticks: { color: textColor },
-                        grid: { color: gridColor }
-                    }
-                },
-                plugins: {
-                    legend: {
-                        labels: { color: textColor }
-                    },
-                    title: {
-                        color: textColor
-                    }
-                }
+        function getProcessIcon(name) {
+            const iconMap = {
+                'chrome': '🌐',
+                'firefox': '🦊',
+                'safari': '🧭',
+                'terminal': '💻',
+                'iterm': '💻',
+                'finder': '📁',
+                'mail': '📧',
+                'calendar': '📅',
+                'music': '🎵',
+                'photos': '📸',
+                'messages': '💬',
+                'facetime': '📹',
+                'notes': '📝',
+                'calculator': '🧮',
+                'system': '⚙️',
+                'helper': '🔧',
+                'agent': '👤',
+                'daemon': '👾',
+                'service': '🔄',
+                'update': '⬆️',
+                'installer': '📦',
+                'dock': '🚀',
+                'finder': '📁',
+                'spotlight': '🔍',
+                'activity': '📊',
+                'preferences': '⚙️',
+                'audio': '🔊',
+                'video': '🎥',
+                'print': '🖨️',
+                'network': '🌐',
+                'bluetooth': '📶',
+                'wifi': '📡',
+                'backup': '💾',
+                'time': '⏰',
+                'keyboard': '⌨️',
+                'mouse': '🖱️',
+                'display': '🖥️',
+                'graphics': '🎨',
+                'security': '🔒',
+                'login': '🔑',
+                'crash': '💥',
+                'report': '📋',
+                'sync': '🔄',
+                'cloud': '☁️',
+                'download': '⬇️',
+                'upload': '⬆️',
+                'cache': '📦',
+                'temp': '🗑️',
+                'log': '📝',
+                'script': '📜',
+                'default': '📱'
             };
 
-            // Update only the main charts (not track charts)
-            [memoryChart, cpuChart].forEach(chart => {
-                if (chart) {
-                    if (chart.options.scales.x) {
-                        Object.assign(chart.options.scales.x.ticks, commonOptions.scales.x.ticks);
-                        Object.assign(chart.options.scales.x.grid, commonOptions.scales.x.grid);
+            const lowerName = name.toLowerCase();
+            
+            for (const [key, emoji] of Object.entries(iconMap)) {
+                if (lowerName.includes(key)) {
+                    return emoji;
+                }
+            }
+
+            return iconMap.default;
+        }
+
+        function checkStarterApps(processes) {
+            processes.forEach(process => {
+                if (process.cpu < 0.1 && process.memory < 50 * 1024 * 1024) { // Less than 0.1% CPU and 50MB memory
+                    if (!starterAppTimers.has(process.pid)) {
+                        starterAppTimers.set(process.pid, {
+                            timestamp: Date.now(),
+                            name: process.name
+                        });
                     }
-                    if (chart.options.scales.y) {
-                        Object.assign(chart.options.scales.y.ticks, commonOptions.scales.y.ticks);
-                        Object.assign(chart.options.scales.y.grid, commonOptions.scales.y.grid);
-                    }
-                    if (chart.options.plugins.legend) {
-                        Object.assign(chart.options.plugins.legend.labels, commonOptions.plugins.legend.labels);
-                    }
-                    if (chart.options.plugins.title) {
-                        Object.assign(chart.options.plugins.title, commonOptions.plugins.title);
-                    }
-                    chart.update();
+                } else {
+                    starterAppTimers.delete(process.pid);
+                }
+            });
+
+            // check for apps that have been inactive for the timeout period
+            const now = Date.now();
+            starterAppTimers.forEach((data, pid) => {
+                if (now - data.timestamp >= STARTER_APP_TIMEOUT) {
+                    showStarterAppWarning(pid, data.name);
+                    starterAppTimers.delete(pid);
                 }
             });
         }
 
-        // Add theme toggle listener for main graphs
-        document.getElementById('themeToggle').addEventListener('click', () => {
-            updateChartsTheme();
-        });
+        // Function to show starter app termination warning
+        function showStarterAppWarning(pid, name) {
+            // Remove any existing warning for this process
+            const existingWarning = document.querySelector(`.starter-app-warning[data-pid="${pid}"]`);
+            if (existingWarning) {
+                existingWarning.remove();
+            }
 
-        // Call on initial load for main graphs
-        window.addEventListener('load', () => {
-            updateChartsTheme();
-        });
+            const warning = document.createElement('div');
+            warning.className = 'starter-app-warning';
+            warning.setAttribute('data-pid', pid);
+            warning.innerHTML = `
+                ⚠️ ${name} (PID: ${pid}) has been inactive for a while. 
+                <button class="button button-primary" onclick="terminateStarterApp(${pid}, this)">Terminate</button>
+                <button class="button button-secondary" onclick="this.closest('.starter-app-warning').remove()">Ignore</button>
+            `;
+            document.querySelector('.container').appendChild(warning);
+        }
 
-        // Add legend click handler to store hidden state
-        function addLegendClickHandler(chart) {
-            chart.options.plugins.legend.onClick = function(e, legendItem, legend) {
-                const index = legendItem.datasetIndex;
-                const ci = legend.chart;
-                const id = ci.data.datasets[index].label.split(' ').pop(); // Extract PID or group name
+        async function terminateStarterApp(pid, buttonElement) {
+            buttonElement.disabled = true;
+            buttonElement.innerHTML = '⏳ Terminating...';
+            
+            ipcRenderer.send('process-action', {
+                action: 'kill',
+                pid: pid
+            });
+
+            ipcRenderer.once('process-action-result', (event, { success, error }) => {
+                const warningElement = buttonElement.closest('.starter-app-warning');
                 
-                // Toggle hidden state in our persistent storage
-                trackedData.hidden.set(id, !trackedData.hidden.get(id));
-                
-                // Update chart visibility
-                if (ci.isDatasetVisible(index)) {
-                    ci.hide(index);
+                if (success) {
+                    warningElement.style.backgroundColor = '#dcfce7';
+                    warningElement.innerHTML = '✅ Process terminated successfully';
+                    setTimeout(() => {
+                        warningElement.remove();
+                    }, 2000);
                 } else {
-                    ci.show(index);
+                    buttonElement.disabled = false;
+                    buttonElement.innerHTML = 'Retry Termination';
+                    warningElement.style.backgroundColor = '#fee2e2';
+                    
+                    const errorContainer = document.createElement('div');
+                    errorContainer.style.marginTop = '12px';
+                    errorContainer.style.padding = '8px';
+                    errorContainer.style.backgroundColor = '#fef2f2';
+                    errorContainer.style.borderRadius = '4px';
+                    
+                    const errorMsg = document.createElement('div');
+                    errorMsg.style.color = '#991b1b';
+                    errorMsg.style.fontSize = '0.9em';
+                    errorMsg.style.display = 'flex';
+                    errorMsg.style.alignItems = 'center';
+                    errorMsg.style.gap = '8px';
+                    
+                    errorMsg.innerHTML = `
+                        <span style="font-size: 1.2em">⚠️</span>
+                        <span>${error || 'Failed to terminate process. This might be a system process that requires elevated privileges.'}</span>
+                    `;
+                    
+                    const helpText = document.createElement('div');
+                    helpText.style.color = '#64748b';
+                    helpText.style.fontSize = '0.8em';
+                    helpText.style.marginTop = '8px';
+                    helpText.style.marginLeft = '28px';
+                    helpText.textContent = 'Note: Some system processes cannot be terminated as they are essential for system operation.';
+                    
+                    errorContainer.appendChild(errorMsg);
+                    errorContainer.appendChild(helpText);
+                    
+                    const existingError = warningElement.querySelector('.error-container');
+                    if (existingError) {
+                        existingError.remove();
+                    }
+                    
+                    errorContainer.className = 'error-container';
+                    warningElement.appendChild(errorContainer);
                 }
-            };
+            });
+        }
+
+        function groupProcesses(processes) {
+            const groups = new Map();
+            
+            processes.forEach(process => {
+                const appName = process.name.split('.')[0]; // Basic app name extraction
+                if (!groups.has(appName)) {
+                    groups.set(appName, {
+                        name: appName,
+                        processes: [],
+                        totalCpu: 0,
+                        totalMemory: 0,
+                        icon: process.iconPath // Use the icon path from the process
+                    });
+                }
+                
+                const group = groups.get(appName);
+                group.processes.push(process);
+                group.totalCpu += process.cpu;
+                group.totalMemory += process.memory;
+            });
+            
+            return groups;
+        }
+
+        function renderGroupedProcesses(groups) {
+            const tbody = document.getElementById('processList');
+            tbody.innerHTML = '';
+            
+            groups.forEach(group => {
+                const groupContainer = document.createElement('div');
+                groupContainer.className = 'group-container';
+                
+                const groupHeader = document.createElement('div');
+                groupHeader.className = 'group-header';
+                
+                // Create icon element with fallback to emoji
+                let iconHtml = '';
+                if (group.icon) {
+                    iconHtml = `
+                        <img src="file://${group.icon}" 
+                             class="group-icon" 
+                             alt="${group.name}" 
+                             onerror="this.outerHTML='<div class=\'group-icon-placeholder\'>${getProcessIcon(group.name)}</div>'">
+                    `;
+                } else {
+                    iconHtml = `<div class="group-icon-placeholder">${getProcessIcon(group.name)}</div>`;
+                }
+                
+                groupHeader.innerHTML = `
+                    ${iconHtml}
+                    <span class="group-title">${group.name}</span>
+                    <span class="group-stats">
+                        Processes: ${group.processes.length} | 
+                        CPU: ${group.totalCpu.toFixed(1)}% | 
+                        Memory: ${formatBytes(group.totalMemory)}
+                    </span>
+                `;
+                
+                const processTable = document.createElement('table');
+                processTable.className = 'process-table';
+                processTable.innerHTML = `
+                    <tbody>
+                        ${group.processes.map(process => `
+                            <tr class="process-row ${isFocusMode && process.cpu > 5 ? 'focused' : ''}" data-pid="${process.pid}">
+                                <td>${process.pid}</td>
+                                <td>${process.name}</td>
+                                <td>${process.cpu.toFixed(1)}%</td>
+                                <td>${formatBytes(process.memory)}</td>
+                                <td>${process.state}</td>
+                                <td class="actions-cell">
+                                    <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                `;
+                
+                groupContainer.appendChild(groupHeader);
+                groupContainer.appendChild(processTable);
+                tbody.appendChild(groupContainer);
+            });
         }
     </script>
 </body>
