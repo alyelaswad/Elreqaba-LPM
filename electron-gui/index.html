@@ -1744,6 +1744,39 @@
             ipcRenderer.send('refresh-processes');
         });
 
+        // Add the grouping method selector
+        function addGroupingMethodSelector() {
+            const controlsContainer = document.getElementById('groupButton').parentElement;
+            
+            // Check if it's already added
+            if (document.getElementById('groupingMethod')) return;
+            
+            const selectorContainer = document.createElement('div');
+            selectorContainer.className = 'selector-container';
+            selectorContainer.style.display = 'inline-block';
+            selectorContainer.style.marginLeft = '10px';
+            
+            const selector = document.createElement('select');
+            selector.id = 'groupingMethod';
+            selector.className = 'grouping-method-selector';
+            selector.innerHTML = `
+                <option value="name">Group by Name</option>
+                <option value="ppid">Group by PPID</option>
+            `;
+            
+            selector.addEventListener('change', () => {
+                if (isGrouped) {
+                    ipcRenderer.send('refresh-processes');
+                }
+            });
+            
+            selectorContainer.appendChild(selector);
+            controlsContainer.appendChild(selectorContainer);
+        }
+        
+        // Call this function on init
+        addGroupingMethodSelector();
+
         document.getElementById('focusModeButton').addEventListener('click', () => {
             isFocusMode = !isFocusMode;
             const button = document.getElementById('focusModeButton');
@@ -1925,24 +1958,73 @@
 
         function groupProcesses(processes) {
             const groups = new Map();
+            const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
             
-            processes.forEach(process => {
-                const appName = process.name.split('.')[0]; // Basic app name extraction
-                if (!groups.has(appName)) {
-                    groups.set(appName, {
-                        name: appName,
-                        processes: [],
-                        totalCpu: 0,
-                        totalMemory: 0,
-                        icon: process.iconPath // Use the icon path from the process
-                    });
-                }
+            if (groupingMethod === 'name') {
+                // Name-based grouping (existing logic)
+                processes.forEach(process => {
+                    const appName = process.name.split('.')[0]; // Basic app name extraction
+                    if (!groups.has(appName)) {
+                        groups.set(appName, {
+                            name: appName,
+                            processes: [],
+                            totalCpu: 0,
+                            totalMemory: 0,
+                            icon: process.iconPath // Use the icon path from the process
+                        });
+                    }
+                    
+                    const group = groups.get(appName);
+                    group.processes.push(process);
+                    group.totalCpu += process.cpu;
+                    group.totalMemory += process.memory;
+                });
+            } else if (groupingMethod === 'ppid') {
+                // PPID-based grouping
+                const processMap = new Map(); 
+                processes.forEach(process => {
+                    processMap.set(process.pid, process);
+                });
                 
-                const group = groups.get(appName);
-                group.processes.push(process);
-                group.totalCpu += process.cpu;
-                group.totalMemory += process.memory;
-            });
+                // Second pass: group by PPID
+                processes.forEach(process => {
+                    if (!process.ppid || process.ppid === 0 || !processMap.has(process.ppid)) {
+                        const groupId = `pid-${process.pid}`;
+                        if (!groups.has(groupId)) {
+                            groups.set(groupId, {
+                                name: process.name,
+                                pid: process.pid,
+                                processes: [],
+                                totalCpu: 0,
+                                totalMemory: 0,
+                                icon: process.iconPath
+                            });
+                        }
+                        const group = groups.get(groupId);
+                        group.processes.push(process);
+                        group.totalCpu += process.cpu;
+                        group.totalMemory += process.memory;
+                    } else {
+                        const parentPid = process.ppid;
+                        const groupId = `pid-${parentPid}`;
+                        if (!groups.has(groupId)) {
+                            const parentProcess = processMap.get(parentPid);
+                            groups.set(groupId, {
+                                name: parentProcess ? parentProcess.name : `PID ${parentPid}`,
+                                pid: parentPid,
+                                processes: [],
+                                totalCpu: 0,
+                                totalMemory: 0,
+                                icon: parentProcess ? parentProcess.iconPath : null
+                            });
+                        }
+                        const group = groups.get(groupId);
+                        group.processes.push(process);
+                        group.totalCpu += process.cpu;
+                        group.totalMemory += process.memory;
+                    }
+                });
+            }
             
             return groups;
         }
@@ -1951,6 +2033,8 @@
             const tbody = document.getElementById('processList');
             tbody.innerHTML = '';
             
+            const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
+            
             groups.forEach(group => {
                 const groupContainer = document.createElement('div');
                 groupContainer.className = 'group-container';
@@ -1958,7 +2042,6 @@
                 const groupHeader = document.createElement('div');
                 groupHeader.className = 'group-header';
                 
-                // Create icon element with fallback to emoji
                 let iconHtml = '';
                 if (group.icon) {
                     iconHtml = `
@@ -1971,9 +2054,13 @@
                     iconHtml = `<div class="group-icon-placeholder">${getProcessIcon(group.name)}</div>`;
                 }
                 
+                const titleInfo = groupingMethod === 'ppid' && group.pid 
+                    ? `${group.name} (Parent PID: ${group.pid})` 
+                    : group.name;
+                
                 groupHeader.innerHTML = `
                     ${iconHtml}
-                    <span class="group-title">${group.name}</span>
+                    <span class="group-title">${titleInfo}</span>
                     <span class="group-stats">
                         Processes: ${group.processes.length} | 
                         CPU: ${group.totalCpu.toFixed(1)}% | 
@@ -1983,27 +2070,66 @@
                 
                 const processTable = document.createElement('table');
                 processTable.className = 'process-table';
-                processTable.innerHTML = `
-                    <tbody>
-                        ${group.processes.map(process => `
-                            <tr class="process-row ${isFocusMode && process.cpu > 5 ? 'focused' : ''}" data-pid="${process.pid}">
-                                <td>${process.pid}</td>
-                                <td>${process.name}</td>
-                                <td>${process.cpu.toFixed(1)}%</td>
-                                <td>${formatBytes(process.memory)}</td>
-                                <td>${process.state}</td>
-                                <td class="actions-cell">
-                                    <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                `;
+                
+                if (groupingMethod === 'ppid') {
+                    processTable.innerHTML = `
+                        <tbody>
+                            ${group.processes.map(process => {
+                                const isParent = process.pid === group.pid;
+                                const rowClass = isParent ? 'process-row parent-process' : 'process-row child-process';
+                                return `
+                                    <tr class="${rowClass} ${isFocusMode && process.cpu > 5 ? 'focused' : ''}" data-pid="${process.pid}">
+                                        <td>${process.pid}</td>
+                                        <td>${isParent ? process.name + ' (Parent)' : process.name}</td>
+                                        <td>${process.cpu.toFixed(1)}%</td>
+                                        <td>${formatBytes(process.memory)}</td>
+                                        <td>${process.state}</td>
+                                        <td class="actions-cell">
+                                            <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
+                                        </td>
+                                    </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    `;
+                } else {
+                    processTable.innerHTML = `
+                        <tbody>
+                            ${group.processes.map(process => `
+                                <tr class="process-row ${isFocusMode && process.cpu > 5 ? 'focused' : ''}" data-pid="${process.pid}">
+                                    <td>${process.pid}</td>
+                                    <td>${process.name}</td>
+                                    <td>${process.cpu.toFixed(1)}%</td>
+                                    <td>${formatBytes(process.memory)}</td>
+                                    <td>${process.state}</td>
+                                    <td class="actions-cell">
+                                        <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    `;
+                }
                 
                 groupContainer.appendChild(groupHeader);
                 groupContainer.appendChild(processTable);
                 tbody.appendChild(groupContainer);
             });
+            
+            if (groupingMethod === 'ppid' && !document.getElementById('ppid-group-styles')) {
+                const styleEl = document.createElement('style');
+                styleEl.id = 'ppid-group-styles';
+                styleEl.textContent = `
+                    .parent-process {
+                        background-color: var(--bg-tertiary);
+                        font-weight: bold;
+                    }
+                    .child-process {
+                        padding-left: 10px;
+                    }
+                `;
+                document.head.appendChild(styleEl);
+            }
         }
     </script>
 </body>

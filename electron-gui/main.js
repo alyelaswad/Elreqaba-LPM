@@ -60,7 +60,7 @@ function createWindow() {
 
 async function getProcesses() {
     try {
-        const { stdout } = await execPromise('ps -ax -o pid,pcpu,pmem,comm,state,command');
+        const { stdout } = await execPromise('ps -ax -o pid,ppid,pcpu,pmem,comm,state,command');
         const processLines = stdout.split('\n')
             .slice(1) 
             .filter(line => line.trim());
@@ -69,11 +69,12 @@ async function getProcesses() {
             try {
                 const parts = line.trim().split(/\s+/);
                 const pid = parts[0];
-                const cpu = parts[1];
-                const mem = parts[2];
-                const comm = parts[3];
-                const state = parts[4];
-                const command = await getProcessCommand(pid).catch(() => parts.slice(5).join(' '));
+                const ppid = parts[1];
+                const cpu = parts[2];
+                const mem = parts[3];
+                const comm = parts[4];
+                const state = parts[5];
+                const command = await getProcessCommand(pid).catch(() => parts.slice(6).join(' '));
 
                 let name = '';
                 if (command && command.includes('/')) {
@@ -117,6 +118,7 @@ async function getProcesses() {
 
                 return {
                     pid: parseInt(pid),
+                    ppid: parseInt(ppid),
                     cpu: parseFloat(cpu) || 0,
                     memory: parseFloat(mem) * 1024 * 1024 || 0, // Convert percentage to bytes
                     name,
@@ -216,16 +218,17 @@ async function getTrackedProcesses() {
         
         for (const pid of trackedProcesses) {
             try {
-                const { stdout } = await execPromise(`ps -p ${pid} -o pid,pcpu,pmem,comm,stat,command`);
+                const { stdout } = await execPromise(`ps -p ${pid} -o pid,ppid,pcpu,pmem,comm,stat,command`);
                 const lines = stdout.split('\n').slice(1).filter(line => line.trim());
                 if (lines.length > 0) {
-                    const [pid, cpu, mem, comm, stat, ...cmdParts] = lines[0].trim().split(/\s+/);
+                    const [pid, ppid, cpu, mem, comm, stat, ...cmdParts] = lines[0].trim().split(/\s+/);
                     const command = cmdParts.join(' ');
                     let name = command.split('/').pop().split(' ')[0];
                     if (name === '') name = comm;
                     
                     trackedProcessesData.push({
                         pid: parseInt(pid),
+                        ppid: parseInt(ppid),
                         cpu: parseFloat(cpu),
                         memory: parseFloat(mem) * 1024 * 1024,
                         name,
