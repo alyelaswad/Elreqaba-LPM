@@ -17,8 +17,8 @@ use sysinfo::{Pid, Signal};
 use std::io::{BufRead, BufReader};
 use std::fs::File;
 use std::fs::read_to_string;
-use std::collections::HashMap;
-use cursive::theme::{BaseColor, Color, ColorStyle, Palette, PaletteColor, Theme, Effect, Style};
+// use std::collections::HashMap;
+use cursive::theme::{BaseColor, Color, ColorStyle, PaletteColor, Theme, Effect, Style};
 use cursive::utils::markup::StyledString;
 
 #[derive(Clone, Debug)]
@@ -114,31 +114,6 @@ impl Default for FilterState {
 lazy_static! {
     static ref SYSTEM: Mutex<System> = Mutex::new(System::new_all());
     static ref CURRENT_FILTER: Mutex<FilterState> = Mutex::new(FilterState::default());
-}
-
-#[derive(Clone)]
-struct SysStats {
-    cpu_freq: u64,
-    cpu_name: String,
-    cpu_temp: f32,
-    cpu_cores_num: usize,
-    uptime: u64,
-    mem_total: u64,
-    user_proc_count: usize,
-}
-
-impl Default for SysStats {
-    fn default() -> Self {
-        SysStats {
-            cpu_freq: 0,
-            cpu_name: String::new(),
-            cpu_temp: 0.0,
-            cpu_cores_num: num_cpus::get(),
-            uptime: 0,
-            mem_total: 0,
-            user_proc_count: 0,
-        }
-    }
 }
 
 // Add a static flag to track if the tree view is open
@@ -410,11 +385,6 @@ fn get_processes() -> Vec<Process> {
     processes
 }
 
-fn verify_nice_value(pid: u32) -> Option<i32> {
-    // Use the same method as get_process_nice to verify the nice value
-    get_process_nice(pid)
-}
-
 #[cfg(target_os = "linux")]
 fn get_cpu_frequencies() -> Vec<f64> {
     let mut frequencies = Vec::new();
@@ -503,7 +473,7 @@ struct SystemInfo {
     logical_cores: usize,
 }
 
-fn get_system_info() -> SystemInfo {
+fn get_system_metrics() -> SystemInfo {
     let mut system = SYSTEM.lock().unwrap();
     system.refresh_all();
 
@@ -520,8 +490,8 @@ fn get_system_info() -> SystemInfo {
     }
 }
 
-fn get_system_info() -> String {
-    let sys_info = get_system_info();
+fn format_system_info() -> String {
+    let sys_info = get_system_metrics();
     let freqs = get_cpu_frequencies();
     let freq = if !freqs.is_empty() {
         freqs.iter().sum::<f64>() / freqs.len() as f64
@@ -565,7 +535,7 @@ fn get_system_info() -> String {
 }
 
 fn get_system_info_block(width: usize) -> StyledString {
-    let sys_info = get_system_info();
+    let sys_info = get_system_metrics();
     let cpu_name = get_cpu_name();
     let freqs = get_cpu_frequencies();
     let freq = if !freqs.is_empty() {
@@ -608,7 +578,7 @@ fn get_keybindings_bar() -> StyledString {
         k,
         Style::from(ColorStyle::new(Color::Light(BaseColor::Cyan), Color::Dark(BaseColor::Magenta))).combine(Effect::Bold)
     );
-    let text = |t: &str| StyledString::styled(
+    let _text = |t: &str| StyledString::styled(
         t,
         Style::from(ColorStyle::new(Color::Light(BaseColor::White), Color::Dark(BaseColor::Magenta)))
     );
@@ -948,7 +918,7 @@ siv.add_global_callback('n', |s| {
 
 // Add this function to create a real-time system info dialog
 fn show_system_info_dialog(siv: &mut Cursive) {
-    let content = TextView::new(get_system_info()).with_name("sysinfo_content");
+    let content = TextView::new(format_system_info()).with_name("sysinfo_content");
     let dialog = Dialog::around(content)
         .title("System Information")
         .button("Close", |s| {
@@ -964,7 +934,7 @@ fn show_system_info_dialog(siv: &mut Cursive) {
         while UPDATES_PAUSED.load(AtomicOrdering::SeqCst) {
             sink.send(Box::new(|s| {
                 if let Some(mut view) = s.find_name::<TextView>("sysinfo_content") {
-                    view.set_content(get_system_info());
+                    view.set_content(format_system_info());
                 }
             })).ok();
             thread::sleep(Duration::from_millis(500));
@@ -1029,7 +999,7 @@ fn show_filter_value_dialog(siv: &mut Cursive, filter_type: FilterType) {
     )
     .title("Enter Filter Value")
     .button("Apply", move |s| {
-        if let Some(mut view) = s.find_name::<EditView>("filter_value") {
+        if let Some(view) = s.find_name::<EditView>("filter_value") {
             let filter_value = view.get_content().to_string();
             if let Some(mut table_view) = s.find_name::<TableView<Process, BasicColumn>>("table") {
                 let current_processes = get_processes();
