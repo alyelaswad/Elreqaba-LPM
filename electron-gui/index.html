@@ -736,6 +736,7 @@
                         <th>CPU %</th>
                         <th>Memory</th>
                         <th>State</th>
+                        <th>Niceness</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -787,6 +788,18 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div id="nicenessModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4); z-index:2000; align-items:center; justify-content:center;">
+        <div style="background:#fff; color:#222; padding:32px 24px; border-radius:12px; min-width:300px; box-shadow:0 4px 32px rgba(0,0,0,0.2); text-align:center;">
+            <h3>Change Niceness</h3>
+            <input id="nicenessInput" type="number" min="-20" max="19" style="margin:16px 0; padding:8px; width:80px; font-size:1.2em;" />
+            <div>
+                <button id="nicenessOk" class="button button-primary">OK</button>
+                <button id="nicenessCancel" class="button button-secondary">Cancel</button>
+            </div>
+            <div id="nicenessError" style="color:#b91c1c; margin-top:8px; font-size:0.95em;"></div>
         </div>
     </div>
 
@@ -1610,6 +1623,7 @@
                 <td>${process.cpu.toFixed(1)}%</td>
                 <td>${formatBytes(process.memory)}</td>
                 <td>${process.state}</td>
+                <td>${process.niceness !== undefined ? process.niceness : ''}</td>
                 <td class="actions-cell">
                     <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
                 </td>
@@ -1631,16 +1645,16 @@
             const dropdown = document.createElement('div');
             dropdown.className = 'dropdown-menu';
             dropdown.innerHTML = `
-                <div class="dropdown-item" onclick="handleAction('kill', ${pid})">
+                <div class="dropdown-item" data-action="kill">
                     ⚡ Kill Process
                 </div>
-                <div class="dropdown-item" onclick="handleAction('pause', ${pid})">
+                <div class="dropdown-item" data-action="pause">
                     ⏸️ Pause Process
                 </div>
-                <div class="dropdown-item" onclick="handleAction('resume', ${pid})">
+                <div class="dropdown-item" data-action="resume">
                     ▶️ Resume Process
                 </div>
-                <div class="dropdown-item" onclick="handleAction('priority', ${pid})">
+                <div class="dropdown-item" data-action="niceness">
                     ⚙️ Change Priority
                 </div>
             `;
@@ -1665,6 +1679,20 @@
             if (dropdownRect.bottom > window.innerHeight) {
                 dropdown.style.top = `${rect.bottom - dropdownRect.height}px`;
             }
+
+            // Add event listeners
+            dropdown.querySelector('[data-action="kill"]').addEventListener('click', function(e) {
+                handleAction('kill', pid);
+            });
+            dropdown.querySelector('[data-action="pause"]').addEventListener('click', function(e) {
+                handleAction('pause', pid);
+            });
+            dropdown.querySelector('[data-action="resume"]').addEventListener('click', function(e) {
+                handleAction('resume', pid);
+            });
+            dropdown.querySelector('[data-action="niceness"]').addEventListener('click', function(e) {
+                showNicenessPrompt(pid);
+            });
         }
 
         // Handle action clicks
@@ -1717,7 +1745,7 @@
                     notification.style.borderRadius = '8px';
                     notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
                     notification.style.animation = 'fadeIn 0.3s ease-out';
-                    notification.innerHTML = `❌ Failed to ${action} process ${pid}: ${error}`;
+                    notification.innerHTML = `❌ Permission denied. You can only change niceness for your own processes, and only decrease niceness as root.`;
                     
                     document.body.appendChild(notification);
                     setTimeout(() => {
@@ -2084,6 +2112,7 @@
                                         <td>${process.cpu.toFixed(1)}%</td>
                                         <td>${formatBytes(process.memory)}</td>
                                         <td>${process.state}</td>
+                                        <td>${process.niceness !== undefined ? process.niceness : ''}</td>
                                         <td class="actions-cell">
                                             <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
                                         </td>
@@ -2102,6 +2131,7 @@
                                     <td>${process.cpu.toFixed(1)}%</td>
                                     <td>${formatBytes(process.memory)}</td>
                                     <td>${process.state}</td>
+                                    <td>${process.niceness !== undefined ? process.niceness : ''}</td>
                                     <td class="actions-cell">
                                         <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
                                     </td>
@@ -2130,6 +2160,48 @@
                 `;
                 document.head.appendChild(styleEl);
             }
+        }
+
+        function showNicenessPrompt(pid) {
+            // Remove any existing dropdowns
+            document.querySelectorAll('.dropdown-menu').forEach(menu => {
+                document.body.removeChild(menu);
+            });
+
+            const modal = document.getElementById('nicenessModal');
+            const input = document.getElementById('nicenessInput');
+            const okBtn = document.getElementById('nicenessOk');
+            const cancelBtn = document.getElementById('nicenessCancel');
+            const errorDiv = document.getElementById('nicenessError');
+
+            input.value = '';
+            errorDiv.textContent = '';
+            modal.style.display = 'flex';
+
+            input.focus();
+
+            function closeModal() {
+                modal.style.display = 'none';
+                okBtn.onclick = null;
+                cancelBtn.onclick = null;
+            }
+
+            okBtn.onclick = function() {
+                const nicenessInt = parseInt(input.value, 10);
+                if (isNaN(nicenessInt) || nicenessInt < -20 || nicenessInt > 19) {
+                    errorDiv.textContent = "Invalid niceness value. Must be between -20 and 19.";
+                    return;
+                }
+                closeModal();
+                ipcRenderer.send('process-action', {
+                    action: 'niceness',
+                    pid: pid,
+                    niceness: nicenessInt
+                });
+                // ... (keep your notification code here)
+            };
+
+            cancelBtn.onclick = closeModal;
         }
     </script>
 </body>

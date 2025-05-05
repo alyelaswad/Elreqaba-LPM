@@ -60,7 +60,7 @@ function createWindow() {
 
 async function getProcesses() {
     try {
-        const { stdout } = await execPromise('ps -ax -o pid,ppid,pcpu,pmem,comm,state,command');
+        const { stdout } = await execPromise('ps -ax -o pid,ppid,pcpu,pmem,comm,state,command,ni');
         const processLines = stdout.split('\n')
             .slice(1) 
             .filter(line => line.trim());
@@ -74,7 +74,8 @@ async function getProcesses() {
                 const mem = parts[3];
                 const comm = parts[4];
                 const state = parts[5];
-                const command = await getProcessCommand(pid).catch(() => parts.slice(6).join(' '));
+                const niceness = parts[parts.length - 1]; // Get niceness value
+                const command = await getProcessCommand(pid).catch(() => parts.slice(6, -1).join(' '));
 
                 let name = '';
                 if (command && command.includes('/')) {
@@ -124,7 +125,8 @@ async function getProcesses() {
                     name,
                     state: processState || 'Unknown',
                     command: command || '',
-                    iconPath
+                    iconPath,
+                    niceness: parseInt(niceness) || 0
                 };
             } catch (error) {
                 console.error('Error processing process line:', error);
@@ -258,7 +260,7 @@ async function getTrackedProcesses() {
 }
 
 // drop down menu 
-async function handleProcessAction(action, pid) {
+async function handleProcessAction(action, pid, niceness) {
     try {
         switch (action) {
             case 'kill':
@@ -297,14 +299,43 @@ async function handleProcessAction(action, pid) {
                     pid
                 });
                 break;
-            case 'priority':
-                // Not implemented yet
-                mainWindow.webContents.send('process-action-result', {
-                    success: false,
-                    error: 'Priority change not implemented yet',
-                    action,
-                    pid
-                });
+            case 'niceness':
+                try {
+                    await execPromise(`renice ${niceness} -p ${pid}`);
+                    mainWindow.webContents.send('process-action-result', {
+                        success: true,
+                        action,
+                        pid,
+                        niceness
+                    });
+                } catch (error) {
+                    // If permission denied, try with sudo
+                    if (error.stderr && error.stderr.includes('Permission denied')) {
+                        try {
+                            await execPromise(`sudo -n renice ${niceness} -p ${pid}`);
+                            mainWindow.webContents.send('process-action-result', {
+                                success: true,
+                                action,
+                                pid,
+                                niceness
+                            });
+                        } catch (sudoError) {
+                            mainWindow.webContents.send('process-action-result', {
+                                success: false,
+                                error: sudoError.message,
+                                action,
+                                pid
+                            });
+                        }
+                    } else {
+                        mainWindow.webContents.send('process-action-result', {
+                            success: false,
+                            error: error.message,
+                            action,
+                            pid
+                        });
+                    }
+                }
                 break;
         }
     } catch (error) {
@@ -332,8 +363,8 @@ app.whenReady().then(() => {
         }
     }, 2000);
 
-    ipcMain.on('process-action', async (event, { action, pid }) => {
-        await handleProcessAction(action, pid);
+    ipcMain.on('process-action', async (event, { action, pid, niceness }) => {
+        await handleProcessAction(action, pid, niceness);
     });
 
     ipcMain.on('track-process', (event, pid) => {
@@ -366,3 +397,16 @@ app.on('window-all-closed', () => {
         app.quit();
     }
 }); 
+
+function updateProcessList(processes) {
+    const table = document.querySelector('.process-table');
+    const thead = document.getElementById('processTableHead');
+
+    if (isGrouped) {
+        if (thead && thead.parentNode) {
+            thead.parentNode.removeChild(thead);
+        }
+    }
+
+    // ... render grouped view ...
+} 
