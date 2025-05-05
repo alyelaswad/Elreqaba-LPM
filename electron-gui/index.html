@@ -72,6 +72,9 @@
             padding: 20px 24px;
             border-radius: 16px;
             box-shadow: var(--shadow-md);
+            position: sticky;
+            top: 0;
+            z-index: 100;
         }
 
         .title {
@@ -2255,10 +2258,15 @@
                 warning.addEventListener('animationend', () => {
                     warning.remove();
                 });
+                // Add PID to ignored set
+                const pid = warning.getAttribute('data-pid');
+                if (pid) ignoredIdlePIDs.add(Number(pid));
             });
             // Clear all starter app timers
             starterAppTimers.clear();
         }
+
+        let ignoredIdlePIDs = new Set();
     </script>
 </body>
 </html>
