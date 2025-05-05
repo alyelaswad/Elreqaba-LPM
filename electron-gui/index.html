@@ -356,13 +356,48 @@
         .starter-app-warning {
             background-color: #fef2f2;
             color: #991b1b;
-            padding: 12px;
+            padding: 12px 16px;
             border-radius: 8px;
             margin-top: 8px;
             display: flex;
             align-items: center;
+            gap: 12px;
+            animation: warningPopIn 0.3s ease-out;
+            transition: all 0.3s ease;
+            box-shadow: var(--shadow-sm);
+        }
+
+        @keyframes warningPopIn {
+            0% {
+                opacity: 0;
+                transform: scale(0.95) translateY(-10px);
+            }
+            100% {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+
+        @keyframes warningPopOut {
+            0% {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+            100% {
+                opacity: 0;
+                transform: scale(0.95) translateY(-10px);
+            }
+        }
+
+        .starter-app-warning.removing {
+            animation: warningPopOut 0.3s ease-out forwards;
+        }
+
+        #starterAppWarnings {
+            margin-top: 16px;
+            display: flex;
+            flex-direction: column;
             gap: 8px;
-            animation: fadeIn 0.3s ease-out;
         }
 
         .graphs-container {
@@ -674,19 +709,6 @@
             to { opacity: 0; transform: translateY(10px); }
         }
 
-        .starter-app-warning {
-            background-color: #fef2f2;
-            color: #991b1b;
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-top: 8px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            animation: fadeIn 0.3s ease-out;
-            transition: background-color 0.3s ease;
-        }
-
         .starter-app-warning button {
             padding: 6px 12px;
             font-size: 0.9em;
@@ -744,6 +766,16 @@
                     <!-- Process rows will be inserted here -->
                 </tbody>
             </table>
+            <div style="margin-top: 16px; display: flex; flex-direction: column; gap: 16px;">
+                <div style="text-align: center; padding: 8px; background-color: var(--bg-primary); border-radius: 8px; box-shadow: var(--shadow-sm);">
+                    <button class="button button-secondary" onclick="ignoreAllIdles()">
+                        <span>🚫</span> Ignore All Idles
+                    </button>
+                </div>
+                <div id="starterAppWarnings">
+                    <!-- Starter app warnings will be inserted here -->
+                </div>
+            </div>
         </div>
 
         <div class="tab-content" id="graphs">
@@ -1905,6 +1937,11 @@
 
         // Function to show starter app termination warning
         function showStarterAppWarning(pid, name) {
+            // Only show warning if we're on the processes tab
+            if (!document.querySelector('.tab-content#processes').classList.contains('active')) {
+                return;
+            }
+
             // Remove any existing warning for this process
             const existingWarning = document.querySelector(`.starter-app-warning[data-pid="${pid}"]`);
             if (existingWarning) {
@@ -1917,9 +1954,16 @@
             warning.innerHTML = `
                 ⚠️ ${name} (PID: ${pid}) has been inactive for a while. 
                 <button class="button button-primary" onclick="terminateStarterApp(${pid}, this)">Terminate</button>
-                <button class="button button-secondary" onclick="this.closest('.starter-app-warning').remove()">Ignore</button>
+                <button class="button button-secondary" onclick="removeWarning(this.closest('.starter-app-warning'))">Ignore</button>
             `;
-            document.querySelector('.container').appendChild(warning);
+            document.getElementById('starterAppWarnings').appendChild(warning);
+        }
+
+        function removeWarning(warningElement) {
+            warningElement.classList.add('removing');
+            warningElement.addEventListener('animationend', () => {
+                warningElement.remove();
+            });
         }
 
         async function terminateStarterApp(pid, buttonElement) {
@@ -2202,6 +2246,18 @@
             };
 
             cancelBtn.onclick = closeModal;
+        }
+
+        function ignoreAllIdles() {
+            const warnings = document.querySelectorAll('.starter-app-warning');
+            warnings.forEach(warning => {
+                warning.classList.add('removing');
+                warning.addEventListener('animationend', () => {
+                    warning.remove();
+                });
+            });
+            // Clear all starter app timers
+            starterAppTimers.clear();
         }
     </script>
 </body>
