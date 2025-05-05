@@ -446,6 +446,28 @@ fn get_cpu_frequencies() -> Vec<f64> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn get_cpu_frequencies() -> Vec<f64> {
+    let output = std::process::Command::new("sysctl")
+        .arg("-n")
+        .arg("hw.cpufrequency")
+        .output()
+        .expect("Failed to execute sysctl");
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(freq) = stdout.trim().parse::<f64>() {
+            // Convert Hz to GHz
+            vec![freq / 1_000_000_000.0]
+        } else {
+            vec![]
+        }
+    } else {
+        eprintln!("sysctl failed: {}", String::from_utf8_lossy(&output.stderr));
+        vec![]
+    }
+}
+
 // Add this new function after the get_cpu_frequencies functions
 fn get_cpu_name() -> String {
     std::fs::read_to_string("/proc/cpuinfo")
