@@ -960,8 +960,8 @@ fn filter_processes(processes: &[Process], filter_type: FilterType, filter_value
                         false
                     }
                 },
-                FilterType::USER => process.user.as_ref().map_or(false, |user| user.contains(filter_value)),
-                FilterType::STATUS => format!("{:?}", process.process_state).contains(filter_value),
+                FilterType::USER => process.user.as_ref().map_or(false, |user| user == filter_value),
+                FilterType::STATUS => format!("{:?}", process.process_state) == filter_value,
             }
         })
         .cloned()
