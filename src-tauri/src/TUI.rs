@@ -1,3 +1,6 @@
+// Removed: #[cfg(target_os = "macos")]
+// Removed: extern crate cursive_crossterm; // Ensure the crate is linked
+
 use cursive::align::HAlign;
 use cursive::traits::*;
 use cursive::views::{Dialog, TextView, ScrollView, LinearLayout, DummyView, SelectView, EditView};
@@ -20,6 +23,10 @@ use std::fs::read_to_string;
 // use std::collections::HashMap;
 use cursive::theme::{BaseColor, Color, ColorStyle, PaletteColor, Theme, Effect, Style};
 use cursive::utils::markup::StyledString;
+
+#[cfg(target_os = "macos")]
+use cursive::Cursive as CursiveBackend;
+
 
 #[derive(Clone, Debug)]
 pub struct Process {
@@ -750,12 +757,12 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
     
     let initial_accurate_processes = get_processes();
     let processes = Arc::new(Mutex::new(initial_accurate_processes));
-    let mut siv = Cursive::default();
+    let mut siv = CursiveBackend::default();
     let theme = custom_theme();
     siv.set_theme(theme);
 
     // Get terminal width
-    let width = siv.screen_size().x.max(80) as usize;
+    let width = siv.screen_size().x.max(80);
     // Top bar
     let sysinfo_block = TextView::new(get_system_info_block(width)).with_name("sysinfo_block").fixed_height(4);
     // Bottom bar
@@ -929,7 +936,7 @@ siv.add_global_callback('n', |s| {
                         table_view.set_items(filtered_processes);
                     }
                     // Update system info bar
-                    let width = s.screen_size().x.max(80) as usize;
+                    let width = s.screen_size().x.max(80);
                     if let Some(mut sysinfo_view) = s.find_name::<TextView>("sysinfo_block") {
                         sysinfo_view.set_content(get_system_info_block(width));
                     }
