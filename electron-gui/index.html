@@ -1374,94 +1374,151 @@
         }
 
         function updateTrackCharts(processes) {
-            if (!processes || processes.length === 0) return;
-
-            const timestamp = new Date().toLocaleTimeString();
-            const shouldGroup = document.getElementById('groupProcesses').checked;
-
-            // Process the data
-            let processesToChart = processes;
-            if (shouldGroup) {
-                const groupedByName = new Map();
-                processes.forEach(process => {
-                    const name = process.name;
-                    if (!groupedByName.has(name)) {
-                        groupedByName.set(name, {
-                            name: name,
-                            memory: 0,
-                            cpu: 0,
-                            count: 0
-                        });
-                    }
-                    const group = groupedByName.get(name);
-                    group.memory += Math.max(1, process.memory || 1);
-                    group.cpu += Math.max(0.01, process.cpu || 0.01);
-                    group.count++;
-                });
-
-                processesToChart = Array.from(groupedByName.values()).map(group => ({
-                    name: group.name,
-                    memory: group.memory,
-                    cpu: group.cpu / group.count
-                }));
+            const isGrouped = document.getElementById('groupButton').classList.contains('button-primary');
+            const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
+            
+            // Clear existing history when switching modes
+            if (isGrouped !== trackedData.isGrouped) {
+                trackedData.history.clear();
+                trackedData.colors.clear();
+                trackedData.hidden.clear();
+                colorIndex = 0;
+                trackedData.isGrouped = isGrouped;
             }
-
-            // Update history
-            processesToChart.forEach(process => {
-                const id = shouldGroup ? process.name : process.pid;
+            
+            if (isGrouped) {
+                // Group the processes based on the current grouping method
+                const groups = new Map();
                 
-                if (!trackedData.colors.has(id)) {
-                    trackedData.colors.set(id, getRandomColor());
-                }
-                
-                if (!trackedData.history.has(id)) {
-                    trackedData.history.set(id, {
-                        timestamps: [],
-                        memory: [],
-                        cpu: []
+                if (groupingMethod === 'name') {
+                    processes.forEach(process => {
+                        const name = process.name;
+                        if (!groups.has(name)) {
+                            groups.set(name, {
+                                name: name,
+                                processes: [],
+                                totalCpu: 0,
+                                totalMemory: 0
+                            });
+                        }
+                        const group = groups.get(name);
+                        group.processes.push(process);
+                        group.totalCpu += process.cpu;
+                        group.totalMemory += process.memory;
+                    });
+                } else if (groupingMethod === 'ppid') {
+                    const processMap = new Map();
+                    processes.forEach(process => {
+                        processMap.set(process.pid, process);
+                    });
+                    
+                    processes.forEach(process => {
+                        const parentPid = process.ppid || process.pid;
+                        const groupId = `pid-${parentPid}`;
+                        
+                        if (!groups.has(groupId)) {
+                            const parentProcess = processMap.get(parentPid);
+                            groups.set(groupId, {
+                                name: parentProcess ? parentProcess.name : `PID ${parentPid}`,
+                                pid: parentPid,
+                                processes: [],
+                                totalCpu: 0,
+                                totalMemory: 0
+                            });
+                        }
+                        const group = groups.get(groupId);
+                        group.processes.push(process);
+                        group.totalCpu += process.cpu;
+                        group.totalMemory += process.memory;
                     });
                 }
-
-                const history = trackedData.history.get(id);
-                history.timestamps.push(timestamp);
-                history.memory.push(Math.max(1, process.memory || 1));
-                history.cpu.push(Math.max(0.01, process.cpu || 0.01));
-
-                // Keep only last 30 points
-                if (history.timestamps.length > 30) {
-                    history.timestamps.shift();
-                    history.memory.shift();
-                    history.cpu.shift();
-                }
-            });
-
+                
+                // Update charts with grouped data
+                const timestamp = new Date().toLocaleTimeString();
+                
+                groups.forEach((group, name) => {
+                    const id = name;
+                    if (!trackedData.colors.has(id)) {
+                        trackedData.colors.set(id, getRandomColor());
+                    }
+                    
+                    if (!trackedData.history.has(id)) {
+                        trackedData.history.set(id, {
+                            timestamps: [],
+                            memory: [],
+                            cpu: []
+                        });
+                    }
+                    
+                    const history = trackedData.history.get(id);
+                    history.timestamps.push(timestamp);
+                    history.memory.push(group.totalMemory);
+                    history.cpu.push(group.totalCpu / group.processes.length);
+                    
+                    if (history.timestamps.length > 30) {
+                        history.timestamps.shift();
+                        history.memory.shift();
+                        history.cpu.shift();
+                    }
+                });
+            } else {
+                // Update charts with individual process data
+                const timestamp = new Date().toLocaleTimeString();
+                
+                processes.forEach(process => {
+                    const id = process.pid;
+                    if (!trackedData.colors.has(id)) {
+                        trackedData.colors.set(id, getRandomColor());
+                    }
+                    
+                    if (!trackedData.history.has(id)) {
+                        trackedData.history.set(id, {
+                            timestamps: [],
+                            memory: [],
+                            cpu: []
+                        });
+                    }
+                    
+                    const history = trackedData.history.get(id);
+                    history.timestamps.push(timestamp);
+                    history.memory.push(process.memory);
+                    history.cpu.push(process.cpu);
+                    
+                    if (history.timestamps.length > 30) {
+                        history.timestamps.shift();
+                        history.memory.shift();
+                        history.cpu.shift();
+                    }
+                });
+            }
+            
             // Update Memory Chart
             if (trackMemoryChart) {
                 const datasets = Array.from(trackedData.history.entries()).map(([id, data]) => ({
-                    label: shouldGroup ? `Group: ${id}` : `PID ${id}`,
+                    label: isGrouped ? `Group: ${id}` : `PID ${id}`,
                     data: data.memory,
                     borderColor: trackedData.colors.get(id),
                     backgroundColor: trackedData.colors.get(id) + '20',
                     fill: true,
                     tension: 0.4
                 }));
-
+                
                 trackMemoryChart.data.labels = Array.from(trackedData.history.values())[0]?.timestamps || [];
                 trackMemoryChart.data.datasets = datasets;
                 trackMemoryChart.update('none');
             }
-
+            
             // Update CPU Chart
             if (trackCpuChart) {
                 const datasets = Array.from(trackedData.history.entries()).map(([id, data]) => ({
-                    label: shouldGroup ? `Group: ${id}` : `PID ${id}`,
+                    label: isGrouped ? `Group: ${id}` : `PID ${id}`,
                     data: data.cpu,
                     borderColor: trackedData.colors.get(id),
                     backgroundColor: trackedData.colors.get(id) + '20',
                     fill: true,
                     tension: 0.4
                 }));
-
+                
                 trackCpuChart.data.labels = Array.from(trackedData.history.values())[0]?.timestamps || [];
                 trackCpuChart.data.datasets = datasets;
                 trackCpuChart.update('none');
@@ -1474,55 +1531,124 @@
             trackedList.innerHTML = '';
             groupedList.innerHTML = '';
             
-            // Group processes by name
-            const groupedProcesses = new Map();
-            processes.forEach(process => {
-                const name = process.name;
-                if (!groupedProcesses.has(name)) {
-                    groupedProcesses.set(name, []);
-                }
-                groupedProcesses.get(name).push(process);
-            });
+            // Get current grouping state
+            const isGrouped = document.getElementById('groupButton').classList.contains('button-primary');
+            const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
             
-            // Update tracked processes list
-            processes.forEach(process => {
-                const processCard = document.createElement('div');
-                processCard.className = 'process-card';
+            if (isGrouped) {
+                // Group processes based on the selected grouping method
+                const groups = new Map();
                 
-                processCard.innerHTML = `
-                    <span>PID: ${process.pid}</span>
-                    <span>${process.name}</span>
-                    <button class="remove-button" onclick="untrackProcess(${process.pid})">Remove</button>
-                `;
+                if (groupingMethod === 'name') {
+                    // Group by name
+                    processes.forEach(process => {
+                        const name = process.name;
+                        if (!groups.has(name)) {
+                            groups.set(name, {
+                                name: name,
+                                processes: [],
+                                totalCpu: 0,
+                                totalMemory: 0
+                            });
+                        }
+                        const group = groups.get(name);
+                        group.processes.push(process);
+                        group.totalCpu += process.cpu;
+                        group.totalMemory += process.memory;
+                    });
+                } else if (groupingMethod === 'ppid') {
+                    // Group by PPID
+                    const processMap = new Map();
+                    processes.forEach(process => {
+                        processMap.set(process.pid, process);
+                    });
+                    
+                    processes.forEach(process => {
+                        const parentPid = process.ppid || process.pid;
+                        const groupId = `pid-${parentPid}`;
+                        
+                        if (!groups.has(groupId)) {
+                            const parentProcess = processMap.get(parentPid);
+                            groups.set(groupId, {
+                                name: parentProcess ? parentProcess.name : `PID ${parentPid}`,
+                                pid: parentPid,
+                                processes: [],
+                                totalCpu: 0,
+                                totalMemory: 0
+                            });
+                        }
+                        const group = groups.get(groupId);
+                        group.processes.push(process);
+                        group.totalCpu += process.cpu;
+                        group.totalMemory += process.memory;
+                    });
+                }
                 
-                trackedList.appendChild(processCard);
-            });
-
-            // Update grouped processes list
-            groupedProcesses.forEach((processes, name) => {
-                const groupCard = document.createElement('div');
-                groupCard.className = 'group-card';
-
-                const pids = processes.map(p => p.pid).join(', ');
-                const totalMemory = processes.reduce((sum, p) => sum + p.memory, 0);
-                const avgCpu = processes.reduce((sum, p) => sum + p.cpu, 0) / processes.length;
-
-                groupCard.innerHTML = `
-                    <div class="group-card-title">${name}</div>
-                    <div class="group-card-content">
-                        <div>Process Count: ${processes.length}</div>
-                        <div>PIDs: ${pids}</div>
-                        <div>Total Memory: ${formatBytes(totalMemory)}</div>
-                        <div>Average CPU: ${avgCpu.toFixed(1)}%</div>
-                    </div>
-                `;
-
-                groupedList.appendChild(groupCard);
-            });
+                // Update grouped processes list
+                groups.forEach((group, name) => {
+                    const groupCard = document.createElement('div');
+                    groupCard.className = 'group-card';
+                    
+                    const pids = group.processes.map(p => p.pid).join(', ');
+                    const processCount = group.processes.length;
+                    
+                    groupCard.innerHTML = `
+                        <div class="group-card-title">${name}</div>
+                        <div class="group-card-content">
+                            <div>Process Count: ${processCount}</div>
+                            <div>PIDs: ${pids}</div>
+                            <div>Total Memory: ${formatBytes(group.totalMemory)}</div>
+                            <div>Average CPU: ${(group.totalCpu / processCount).toFixed(1)}%</div>
+                        </div>
+                        <button class="remove-button" onclick="untrackGroup('${name}')">Remove Group</button>
+                    `;
+                    
+                    groupedList.appendChild(groupCard);
+                });
+                
+                // Hide individual tracked processes when grouped
+                trackedList.style.display = 'none';
+                groupedList.style.display = 'block';
+            } else {
+                // Show individual processes
+                processes.forEach(process => {
+                    const processCard = document.createElement('div');
+                    processCard.className = 'process-card';
+                    
+                    processCard.innerHTML = `
+                        <span>PID: ${process.pid}</span>
+                        <span>${process.name}</span>
+                        <button class="remove-button" onclick="untrackProcess(${process.pid})">Remove</button>
+                    `;
+                    
+                    trackedList.appendChild(processCard);
+                });
+                
+                // Show individual tracked processes
+                trackedList.style.display = 'block';
+                groupedList.style.display = 'none';
+            }
         }
 
-        // Store tracked processes data between updates
-        let lastTrackedProcesses = [];
+        // Add function to untrack a group of processes
+        function untrackGroup(groupName) {
+            const isGrouped = document.getElementById('groupButton').classList.contains('button-primary');
+            const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
+            
+            if (isGrouped) {
+                const groupCard = document.querySelector(`.group-card:has(.group-card-title:contains('${groupName}'))`);
+                if (groupCard) {
+                    const pids = groupCard.querySelector('.group-card-content').textContent
+                        .match(/PIDs: ([\d, ]+)/)[1]
+                        .split(',')
+                        .map(pid => parseInt(pid.trim()));
+                    
+                    pids.forEach(pid => {
+                        untrackProcess(pid);
+                    });
+                }
+            }
+        }
 
         function untrackProcess(pid) {
             ipcRenderer.send('untrack-process', pid);
@@ -1861,6 +1987,12 @@
             if (mainTable) {
                 mainTable.classList.toggle('grouped-mode', isGrouped);
             }
+            
+            // Clear tracked data when switching modes
+            trackedData.history.clear();
+            trackedData.colors.clear();
+            trackedData.hidden.clear();
+            colorIndex = 0;
             
             ipcRenderer.send('refresh-processes');
         });
