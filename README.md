@@ -1,4 +1,4 @@
-# Elreqaba LPM (Linux Process Monitor) <img src="electron-gui/assets/highres_icon.png" alt="Elreqaba LPM Icon" width="48" height="48" align="right">
+# Elreqaba LPM (Linux Process Monitor) <img src="electron-gui/assets/app-icon.png" alt="Elreqaba LPM Icon" width="48" height="48" align="right">
 
 A powerful process monitoring tool with three interfaces: Command Line Interface (CLI), Terminal User Interface (TUI), and Electron-based Graphical User Interface (GUI).
 
