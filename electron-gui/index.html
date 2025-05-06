@@ -1119,7 +1119,22 @@
         }
 
         function updateCharts(metrics) {
-            const groupedData = groupProcessData(metrics.processData);
+            const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
+            let groupedData;
+            if (!isGrouped) {
+                // No grouping: show all processes individually (name only, no PID)
+                groupedData = metrics.processData.map(proc => ({
+                    name: proc.name,
+                    pid: proc.pid,
+                    totalCpu: proc.cpu,
+                    totalMemory: proc.memory,
+                    processes: [proc]
+                }));
+            } else if (lastGroupedProcesses) {
+                groupedData = Array.from(lastGroupedProcesses.values());
+            } else {
+                return; // No data to show
+            }
             
             // Update Memory Chart
             const timestamp = metrics.timestamp;
@@ -1131,11 +1146,11 @@
             // Initialize or update datasets
             if (memoryChart.data.datasets.length === 0) {
                 // First time setup
-                memoryChart.data.datasets = groupedData.map(process => {
-                    const color = getColorForProcess(process.normalizedName);
+                memoryChart.data.datasets = groupedData.map(group => {
+                    const color = getColorForProcess(group.name + (group.pid ? group.pid : ''));
                     return {
-                        label: process.name,
-                        data: new Array(memoryHistory.length).fill(process.memory),
+                        label: group.name,
+                        data: new Array(memoryHistory.length).fill(group.totalMemory),
                         borderColor: color,
                         backgroundColor: color + '40',
                         tension: 0.1,
@@ -1144,15 +1159,15 @@
                 });
             } else {
                 // Update existing datasets
-                groupedData.forEach((process, index) => {
+                groupedData.forEach((group, index) => {
                     if (index < memoryChart.data.datasets.length) {
                         const dataset = memoryChart.data.datasets[index];
-                        dataset.data.push(process.memory);
+                        dataset.data.push(group.totalMemory);
                         if (dataset.data.length > trackedData.maxHistory) {
                             dataset.data.shift();
                         }
-                        dataset.label = process.name;
-                        const color = getColorForProcess(process.normalizedName);
+                        dataset.label = group.name;
+                        const color = getColorForProcess(group.name + (group.pid ? group.pid : ''));
                         dataset.borderColor = color;
                         dataset.backgroundColor = color + '40';
                     }
@@ -1165,19 +1180,19 @@
             }
 
             memoryChart.data.labels = memoryHistory;
-            memoryChart.update('none'); // Use 'none' mode for smoother updates
+            memoryChart.update('none');
 
             // Update CPU Chart
-            cpuChart.data.labels = groupedData.map(p => p.name);
-            cpuChart.data.datasets[0].data = groupedData.map(p => p.cpu);
-            cpuChart.data.datasets[0].backgroundColor = groupedData.map(p => getColorForProcess(p.normalizedName));
+            cpuChart.data.labels = groupedData.map(g => g.name);
+            cpuChart.data.datasets[0].data = groupedData.map(g => g.totalCpu);
+            cpuChart.data.datasets[0].backgroundColor = groupedData.map(g => getColorForProcess(g.name + (g.pid ? g.pid : '')));
             cpuChart.update('none');
 
             // Update shared legend
             const legendContainer = document.querySelector('.chart-row > div:last-child');
             legendContainer.innerHTML = '';
-            groupedData.forEach((process, index) => {
-                const color = getColorForProcess(process.normalizedName);
+            groupedData.forEach((group, index) => {
+                const color = getColorForProcess(group.name + (group.pid ? group.pid : ''));
                 const legendItem = document.createElement('div');
                 legendItem.style.display = 'flex';
                 legendItem.style.alignItems = 'center';
@@ -1187,9 +1202,13 @@
                 legendItem.style.padding = '2px 5px';
                 legendItem.style.borderRadius = '4px';
                 legendItem.style.transition = 'all 0.2s ease';
+                
+                // Add process count and parent PID for PPID grouping
+                const processCount = group.processes ? ` (${group.processes.length} processes)` : '';
+                const ppidLabel = group.pid && groupingMethod === 'ppid' ? ` (Parent PID: ${group.pid})` : '';
                 legendItem.innerHTML = `
-                    <span style="width: 12px; height: 12px; background-color: ${color}; display: inline-block; border-radius: 2px;"></span>
-                    <span>${process.name}</span>
+                    <span style=\"width: 12px; height: 12px; background-color: ${color}; display: inline-block; border-radius: 2px;\"></span>
+                    <span>${group.name}${ppidLabel}${processCount}</span>
                 `;
                 
                 // Add hover effect
@@ -2031,6 +2050,8 @@
             });
         }
 
+        let lastGroupedProcesses = null;
+
         function groupProcesses(processes) {
             const groups = new Map();
             const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
@@ -2101,6 +2122,7 @@
                 });
             }
             
+            lastGroupedProcesses = groups; // groups is a Map or Array of groups
             return groups;
         }
 
