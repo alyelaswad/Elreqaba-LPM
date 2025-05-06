@@ -4,7 +4,6 @@
     <title>Process Monitor</title>
     <style>
         :root {
-            /* Light theme */
             --bg-primary: #ffffff;
             --bg-secondary: #f8fafc;
             --bg-tertiary: #f1f5f9;
@@ -957,7 +956,6 @@
         let starterAppTimers = new Map();
         const STARTER_APP_TIMEOUT = 5000; // 5 seconds for testing (originally 30 seconds)
 
-        // Define a color palette with distinct colors
         const DISTINCT_COLORS = [
             '#FF6B6B', // Red
             '#4ECDC4', // Teal
@@ -978,7 +976,6 @@
 
         let colorIndex = 0;
         function getRandomColor() {
-            // Cycle through the colors array
             const color = DISTINCT_COLORS[colorIndex];
             colorIndex = (colorIndex + 1) % DISTINCT_COLORS.length;
             return color;
@@ -1074,7 +1071,6 @@
             chartContainer.style.backgroundColor = 'white';
             chartContainer.style.borderRadius = '8px';
 
-            // Create charts row
             const chartsRow = document.createElement('div');
             chartsRow.style.display = 'flex';
             chartsRow.style.flexDirection = 'row';
@@ -1082,7 +1078,6 @@
             chartsRow.style.justifyContent = 'center';
             chartsRow.style.height = '200px';
 
-            // Create title and chart containers
             const memorySection = document.createElement('div');
             memorySection.style.flex = '1';
             memorySection.style.maxWidth = '45%';
@@ -1095,17 +1090,14 @@
             cpuSection.style.height = '100%';
             cpuSection.innerHTML = '<h3 style="text-align: center; margin-bottom: 5px; font-size: 14px;">CPU Usage Distribution</h3>';
 
-            // Move the canvas elements
             const memoryCanvas = document.getElementById('memoryChart');
             const cpuCanvas = document.getElementById('cpuChart');
             memorySection.appendChild(memoryCanvas);
             cpuSection.appendChild(cpuCanvas);
 
-            // Add charts to the row
             chartsRow.appendChild(memorySection);
             chartsRow.appendChild(cpuSection);
 
-            // Create shared legend container
             const legendContainer = document.createElement('div');
             legendContainer.style.display = 'flex';
             legendContainer.style.justifyContent = 'center';
@@ -1114,12 +1106,10 @@
             legendContainer.style.padding = '10px';
             legendContainer.style.marginTop = '10px';
 
-            // Clear and rebuild chart container
             chartContainer.innerHTML = '';
             chartContainer.appendChild(chartsRow);
             chartContainer.appendChild(legendContainer);
 
-            // Memory Chart
             const memoryCtx = memoryCanvas.getContext('2d');
             memoryChart = new Chart(memoryCtx, {
                 type: 'line',
@@ -1222,7 +1212,6 @@
             const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
             let groupedData;
             if (!isGrouped) {
-                // No grouping: show all processes individually (name only, no PID)
                 groupedData = metrics.processData.map(proc => ({
                     name: proc.name,
                     pid: proc.pid,
@@ -1236,16 +1225,13 @@
                 return; // No data to show
             }
             
-            // Update Memory Chart
             const timestamp = metrics.timestamp;
             memoryHistory.push(timestamp);
             if (memoryHistory.length > trackedData.maxHistory) {
                 memoryHistory.shift();
             }
 
-            // Initialize or update datasets
             if (memoryChart.data.datasets.length === 0) {
-                // First time setup
                 memoryChart.data.datasets = groupedData.map(group => {
                     const color = getColorForProcess(group.name + (group.pid ? group.pid : ''));
                     return {
@@ -1258,7 +1244,6 @@
                     };
                 });
             } else {
-                // Update existing datasets
                 groupedData.forEach((group, index) => {
                     if (index < memoryChart.data.datasets.length) {
                         const dataset = memoryChart.data.datasets[index];
@@ -1273,7 +1258,7 @@
                     }
                 });
 
-                // Remove extra datasets if needed
+
                 while (memoryChart.data.datasets.length > groupedData.length) {
                     memoryChart.data.datasets.pop();
                 }
@@ -1282,13 +1267,11 @@
             memoryChart.data.labels = memoryHistory;
             memoryChart.update('none');
 
-            // Update CPU Chart
             cpuChart.data.labels = groupedData.map(g => g.name);
             cpuChart.data.datasets[0].data = groupedData.map(g => g.totalCpu);
             cpuChart.data.datasets[0].backgroundColor = groupedData.map(g => getColorForProcess(g.name + (g.pid ? g.pid : '')));
             cpuChart.update('none');
 
-            // Update shared legend
             const legendContainer = document.querySelector('.chart-row > div:last-child');
             legendContainer.innerHTML = '';
             groupedData.forEach((group, index) => {
@@ -1303,7 +1286,6 @@
                 legendItem.style.borderRadius = '4px';
                 legendItem.style.transition = 'all 0.2s ease';
                 
-                // Add process count and parent PID for PPID grouping
                 const processCount = group.processes ? ` (${group.processes.length} processes)` : '';
                 const ppidLabel = group.pid && groupingMethod === 'ppid' ? ` (Parent PID: ${group.pid})` : '';
                 legendItem.innerHTML = `
@@ -1311,7 +1293,6 @@
                     <span>${group.name}${ppidLabel}${processCount}</span>
                 `;
                 
-                // Add hover effect
                 legendItem.addEventListener('mouseenter', () => {
                     legendItem.style.backgroundColor = 'var(--bg-tertiary)';
                 });
@@ -1319,7 +1300,6 @@
                     legendItem.style.backgroundColor = '';
                 });
                 
-                // Add click handler for toggling visibility
                 legendItem.onclick = () => {
                     const isHidden = memoryChart.getDatasetMeta(index).hidden;
                     memoryChart.getDatasetMeta(index).hidden = !isHidden;
@@ -1336,7 +1316,6 @@
             const memoryCtx = document.getElementById('trackMemoryChart').getContext('2d');
             const cpuCtx = document.getElementById('trackCpuChart').getContext('2d');
 
-            // Basic shared configuration
             const commonConfig = {
                 type: 'line',
                 options: {
@@ -1607,16 +1586,13 @@
             trackedList.innerHTML = '';
             groupedList.innerHTML = '';
             
-            // Get current grouping state
             const isGrouped = document.getElementById('groupButton').classList.contains('button-primary');
             const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
             
             if (isGrouped) {
-                // Group processes based on the selected grouping method
                 const groups = new Map();
                 
                 if (groupingMethod === 'name') {
-                    // Group by name
                     processes.forEach(process => {
                         const name = process.name;
                         if (!groups.has(name)) {
@@ -1633,7 +1609,6 @@
                         group.totalMemory += process.memory;
                     });
                 } else if (groupingMethod === 'ppid') {
-                    // Group by PPID
                     const processMap = new Map();
                     processes.forEach(process => {
                         processMap.set(process.pid, process);
@@ -1660,7 +1635,6 @@
                     });
                 }
                 
-                // Update grouped processes list
                 groups.forEach((group, name) => {
                     const groupCard = document.createElement('div');
                     groupCard.className = 'group-card';
@@ -1682,7 +1656,6 @@
                     groupedList.appendChild(groupCard);
                 });
                 
-                // Hide individual tracked processes when grouped
                 trackedList.style.display = 'none';
                 groupedList.style.display = 'block';
             } else {
@@ -1700,13 +1673,11 @@
                     trackedList.appendChild(processCard);
                 });
                 
-                // Show individual tracked processes
                 trackedList.style.display = 'block';
                 groupedList.style.display = 'none';
             }
         }
 
-        // Add function to untrack a group of processes
         function untrackGroup(groupName) {
             const isGrouped = document.getElementById('groupButton').classList.contains('button-primary');
             const groupingMethod = document.getElementById('groupingMethod')?.value || 'name';
@@ -1750,7 +1721,6 @@
                 <span>${isUpdatePaused ? 'Resume Update' : 'Pause Update'}</span>
             `;
             
-            // Force a chart update when resuming
             if (!isUpdatePaused) {
                 const activeTab = document.querySelector('.tab-content.active');
                 if (activeTab && activeTab.id === 'track') {
@@ -1768,7 +1738,6 @@
             }, 100);
         });
 
-        // Initialize charts when the graphs tab is shown
         document.querySelector('.tab[data-tab="graphs"]').addEventListener('click', () => {
             if (!memoryChart || !cpuChart) {
                 initializeCharts();
@@ -1810,7 +1779,6 @@
             }
         });
 
-        // Add event listener for grouping toggle
         const groupProcessesCheckbox = document.getElementById('groupProcesses');
         if (groupProcessesCheckbox) {
             groupProcessesCheckbox.addEventListener('change', function() {
@@ -1821,7 +1789,6 @@
             });
         }
 
-        // Add dark mode toggle
         const themeToggle = document.getElementById('themeToggle');
         let isDarkMode = false;
 
@@ -1862,7 +1829,6 @@
 
         themeToggle.addEventListener('click', toggleTheme);
 
-        // Add intersection observer for animations
         const observer = new IntersectionObserver((entries) => {
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
@@ -1873,12 +1839,10 @@
             threshold: 0.1
         });
 
-        // Observe chart containers
         document.querySelectorAll('.chart-container').forEach(el => {
             observer.observe(el);
         });
 
-        // Improve action menu positioning
         function showActionMenu(e, process) {
             const menu = document.getElementById('actionMenu');
             const rect = e.target.closest('tr').getBoundingClientRect();
@@ -1915,16 +1879,13 @@
             return row;
         }
 
-        // Handle showing/hiding the dropdown
         function showActions(event, pid) {
             event.stopPropagation();
             
-            // Remove any existing dropdowns
             document.querySelectorAll('.dropdown-menu').forEach(menu => {
                 document.body.removeChild(menu);
             });
             
-            // Create new dropdown
             const dropdown = document.createElement('div');
             dropdown.className = 'dropdown-menu';
             dropdown.innerHTML = `
@@ -1942,19 +1903,15 @@
                 </div>
             `;
 
-            // Position the dropdown
             const button = event.currentTarget;
             const rect = button.getBoundingClientRect();
             
-            // Append to body
             document.body.appendChild(dropdown);
             
-            // Position after append to get correct measurements
             dropdown.style.display = 'block';
             dropdown.style.left = `${rect.right + 5}px`;
             dropdown.style.top = `${rect.top}px`;
 
-            // Adjust position if off screen
             const dropdownRect = dropdown.getBoundingClientRect();
             if (dropdownRect.right > window.innerWidth) {
                 dropdown.style.left = `${rect.left - dropdownRect.width - 5}px`;
@@ -1978,7 +1935,6 @@
             });
         }
 
-        // Handle action clicks
         function handleAction(action, pid) {
             console.log('Action:', action, 'PID:', pid);
             
@@ -1995,7 +1951,6 @@
                 pid: pid
             });
             
-            // Listen for the specific process action result
             ipcRenderer.once(`process-action-result-${pid}`, (event, { success, error, action, pid }) => {
                 if (success) {
                     // Show a brief success message
@@ -2064,7 +2019,6 @@
                 mainTable.classList.toggle('grouped-mode', isGrouped);
             }
             
-            // Clear tracked data when switching modes
             trackedData.history.clear();
             trackedData.colors.clear();
             trackedData.hidden.clear();
@@ -2073,11 +2027,9 @@
             ipcRenderer.send('refresh-processes');
         });
 
-        // Add the grouping method selector
         function addGroupingMethodSelector() {
             const controlsContainer = document.getElementById('groupButton').parentElement;
             
-            // Check if it's already added
             if (document.getElementById('groupingMethod')) return;
             
             const selectorContainer = document.createElement('div');
@@ -2103,7 +2055,6 @@
             controlsContainer.appendChild(selectorContainer);
         }
         
-        // to be called on init
         addGroupingMethodSelector();
 
         document.getElementById('focusModeButton').addEventListener('click', () => {
@@ -2281,7 +2232,6 @@
                     timestamp: now
                 });
                 
-                // Reduce the history retention window for faster testing
                 const MAX_HISTORY_AGE = 1 * 60 * 1000; // 1 minute (reduced from 5 minutes)
                 history.samples = history.samples.filter(s => now - s.timestamp < MAX_HISTORY_AGE);
                 
@@ -2304,7 +2254,6 @@
                 }
             });
             
-            // Reduce the process history retention for faster testing
             const MAX_PROCESS_AGE = 3 * 60 * 1000; // 3 minutes (reduced from 10 minutes)
             processHistory.forEach((history, pid) => {
                 if (now - history.lastSeen > MAX_PROCESS_AGE) {
@@ -2317,7 +2266,6 @@
                     return;
                 }
                 
-                // Skip system processes and whitelisted processes
                 if (isSystemProcess(process) || isWhitelistedProcess(process)) {
                     return;
                 }
@@ -2327,7 +2275,6 @@
                     return; // we do not have enough history to make a determination
                 }
                 
-                // Lower the threshold for what's considered a significant CPU user
                 if (history.avgCpu > 0.2) { // Reduced from 1.0 to 0.2 for testing
                     // Make the idle detection more sensitive
                     const isLowCpu = process.cpu < Math.max(0.1, history.avgCpu - history.stdDevCpu); // Reduced from 2*stdDev to 1*stdDev
