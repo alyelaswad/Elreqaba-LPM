@@ -824,10 +824,6 @@
                 <div style="margin-bottom: 20px;">
                     <input type="number" id="trackPid" placeholder="Enter PID to track">
                     <button class="button button-primary" id="addTrack">Track Process</button>
-                    <label style="margin-left: 15px; color: var(--text-primary);">
-                        <input type="checkbox" id="groupProcesses">
-                        Group processes by name
-                    </label>
                 </div>
                 <div class="tracked-processes">
                     <h3 style="color: var(--text-primary);">Tracked Processes</h3>
@@ -1613,12 +1609,15 @@
         });
 
         // Add event listener for grouping toggle
-        document.getElementById('groupProcesses').addEventListener('change', function() {
-            trackedData.history.clear();
-            trackedData.colors.clear();
-            trackedData.hidden.clear();
-            colorIndex = 0;
-        });
+        const groupProcessesCheckbox = document.getElementById('groupProcesses');
+        if (groupProcessesCheckbox) {
+            groupProcessesCheckbox.addEventListener('change', function() {
+                trackedData.history.clear();
+                trackedData.colors.clear();
+                trackedData.hidden.clear();
+                colorIndex = 0;
+            });
+        }
 
         // Add dark mode toggle
         const themeToggle = document.getElementById('themeToggle');
