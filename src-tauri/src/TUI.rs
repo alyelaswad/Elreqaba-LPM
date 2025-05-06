@@ -24,6 +24,8 @@ use std::fs::read_to_string;
 use cursive::theme::{BaseColor, Color, ColorStyle, PaletteColor, Theme, Effect, Style};
 use cursive::utils::markup::StyledString;
 
+#[cfg(target_os = "linux")]
+use cursive::Cursive as CursiveBackend;
 #[cfg(target_os = "macos")]
 use cursive::Cursive as CursiveBackend;
 
