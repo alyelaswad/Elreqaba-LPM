@@ -341,6 +341,56 @@
             font-size: 0.9em;
             display: flex;
             gap: 16px;
+            align-items: center;
+        }
+
+        .priority-control {
+            display: none; /* Hide by default */
+            align-items: center;
+            gap: 4px;
+            background-color: var(--bg-secondary);
+            border-radius: 6px;
+            padding: 2px;
+            border: 1px solid var(--border-color);
+        }
+
+        .priority-control.visible {
+            display: flex;
+        }
+
+        .priority-button {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 14px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .priority-button:hover {
+            background-color: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .priority-control input {
+            width: 40px;
+            text-align: center;
+            border: none;
+            background: none;
+            color: var(--text-primary);
+            font-size: 14px;
+            padding: 2px;
+        }
+
+        .priority-control input::-webkit-inner-spin-button,
+        .priority-control input::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
         }
 
         .focus-mode {
@@ -743,6 +793,32 @@
             display: flex;
             gap: 8px;
             margin-top: 8px;
+        }
+
+        .dropdown-menu .priority-control {
+            display: none;
+            margin: 6px 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            padding: 2px 4px;
+            flex-direction: row;
+            gap: 2px;
+            font-size: 12px;
+        }
+        .dropdown-menu .priority-control.visible {
+            display: flex;
+        }
+        .dropdown-menu .priority-control button {
+            font-size: 12px;
+            padding: 1px 5px;
+            border-radius: 3px;
+        }
+        .dropdown-menu .priority-control input {
+            width: 32px;
+            font-size: 12px;
+            padding: 1px;
+            border-radius: 3px;
         }
     </style>
 </head>
@@ -2035,6 +2111,22 @@
             const button = document.getElementById('focusModeButton');
             button.classList.toggle('button-primary');
             document.querySelector('.process-table').classList.toggle('focus-mode');
+            
+            if (!isFocusMode) {
+                // Reset niceness to 0 for all processes when focus mode is disabled
+                const processRows = document.querySelectorAll('.process-row');
+                processRows.forEach(row => {
+                    const pid = parseInt(row.dataset.pid);
+                    if (pid) {
+                        ipcRenderer.send('process-action', {
+                            action: 'niceness',
+                            pid: pid,
+                            niceness: 0
+                        });
+                    }
+                });
+            }
+            
             ipcRenderer.send('refresh-processes');
         });
 
@@ -2488,6 +2580,9 @@
                     ? `${group.name} (Parent PID: ${group.pid})` 
                     : group.name;
                 
+                // Remove priority control and button from group header
+                const priorityControl = '';
+                
                 groupHeader.innerHTML = `
                     ${iconHtml}
                     <span class="group-title">${titleInfo}</span>
@@ -2502,19 +2597,29 @@
                 const processTable = document.createElement('table');
                 processTable.className = 'process-table group-process-table';
                 
+                // Filter processes based on focus mode
+                const filteredProcesses = isFocusMode 
+                    ? group.processes.filter(process => process.cpu > 5)
+                    : group.processes;
+                
+                if (filteredProcesses.length === 0 && isFocusMode) {
+                    return; // Skip this group if no processes meet the focus criteria
+                }
+                
                 if (groupingMethod === 'ppid') {
                     processTable.innerHTML = `
                         <tbody>
-                            ${group.processes.map(process => {
+                            ${filteredProcesses.map(process => {
                                 const isParent = process.pid === group.pid;
                                 const rowClass = isParent ? 'process-row parent-process' : 'process-row child-process';
                                 return `
-                                    <tr class="${rowClass} ${isFocusMode && process.cpu > 5 ? 'focused' : ''}" data-pid="${process.pid}">
+                                    <tr class="${rowClass} ${isFocusMode ? 'focused' : ''}" data-pid="${process.pid}">
                                         <td>${process.pid}</td>
                                         <td>${isParent ? process.name + ' (Parent)' : process.name}</td>
                                         <td>${process.cpu.toFixed(1)}%</td>
                                         <td>${formatBytes(process.memory)}</td>
                                         <td>${process.state}</td>
+                                        <td>${process.niceness !== undefined ? process.niceness : ''}</td>
                                         <td class="actions-cell">
                                             <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
                                         </td>
@@ -2526,13 +2631,14 @@
                 } else {
                     processTable.innerHTML = `
                         <tbody>
-                            ${group.processes.map(process => `
-                                <tr class="process-row ${isFocusMode && process.cpu > 5 ? 'focused' : ''}" data-pid="${process.pid}">
+                            ${filteredProcesses.map(process => `
+                                <tr class="process-row ${isFocusMode ? 'focused' : ''}" data-pid="${process.pid}">
                                     <td>${process.pid}</td>
                                     <td>${process.name}</td>
                                     <td>${process.cpu.toFixed(1)}%</td>
                                     <td>${formatBytes(process.memory)}</td>
                                     <td>${process.state}</td>
+                                    <td>${process.niceness !== undefined ? process.niceness : ''}</td>
                                     <td class="actions-cell">
                                         <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
                                     </td>
@@ -2546,35 +2652,6 @@
                 groupContainer.appendChild(processTable);
                 tbody.appendChild(groupContainer);
             });
-            //css for ppid grouping
-            if (groupingMethod === 'ppid' && !document.getElementById('ppid-group-styles')) {
-                const styleEl = document.createElement('style');
-                styleEl.id = 'ppid-group-styles';
-                styleEl.textContent = `
-                    .parent-process {
-                        background-color: var(--bg-tertiary);
-                        font-weight: bold;
-                    }
-                    .child-process {
-                        padding-left: 10px;
-                    }
-                    .group-process-table {
-                        border-collapse: collapse;
-                        width: 100%;
-                    }
-                    .group-process-table td {
-                        padding: 8px 12px;
-                        border-bottom: 1px solid var(--border-color);
-                    }
-                    .group-process-table tr:last-child td {
-                        border-bottom: none;
-                    }
-                    .group-action-button {
-                        margin-left: 8px;
-                    }
-                `;
-                document.head.appendChild(styleEl);
-            }
         }
 
         function showNicenessPrompt(pid) {
@@ -2654,20 +2731,35 @@
             
             const dropdown = document.createElement('div');
             dropdown.className = 'dropdown-menu group-dropdown';
-            dropdown.innerHTML = `
-                <div class="dropdown-item" onclick="handleGroupAction('kill', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
-                    ⚡ Kill All Processes (${processPids.length})
-                </div>
-                <div class="dropdown-item" onclick="handleGroupAction('pause', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
-                    ⏸️ Pause All Processes (${processPids.length})
-                </div>
-                <div class="dropdown-item" onclick="handleGroupAction('resume', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
-                    ▶️ Resume All Processes (${processPids.length})
-                </div>
-                <div class="dropdown-item" onclick="handleGroupAction('priority', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
-                    ⚙️ Change Priority for All (${processPids.length})
-                </div>
-            `;
+            
+            // Different menu items based on focus mode
+            if (isFocusMode) {
+                dropdown.innerHTML = `
+                    <div class="dropdown-item" onclick="handleGroupAction('niceness', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}', -15)">
+                        ⚙️ Set Priority to -15 (${processPids.length})
+                    </div>
+                `;
+            } else {
+                dropdown.innerHTML = `
+                    <div class="dropdown-item" onclick="handleGroupAction('kill', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
+                        ⚡ Kill All Processes (${processPids.length})
+                    </div>
+                    <div class="dropdown-item" onclick="handleGroupAction('pause', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
+                        ⏸️ Pause All Processes (${processPids.length})
+                    </div>
+                    <div class="dropdown-item" onclick="handleGroupAction('resume', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
+                        ▶️ Resume All Processes (${processPids.length})
+                    </div>
+                    <div class="dropdown-item priority-dropdown-item" onclick="toggleDropdownPriorityControl(this, '${groupName.replace(/[^a-zA-Z0-9]/g, '-')}', ${JSON.stringify(processPids)}, ${groupPriors(processPids)})">
+                        ⚙️ Change Priority (${processPids.length})
+                        <div class="priority-control" id="dropdown-priority-control-${groupName.replace(/[^a-zA-Z0-9]/g, '-')}">
+                            <button onclick="event.stopPropagation(); adjustGroupPriorityDropdown('${groupName.replace(/'/g, "\\'")}', ${JSON.stringify(processPids)}, -1, this)">-</button>
+                            <input type="number" value="0" min="-20" max="19" onchange="event.stopPropagation(); setGroupPriorityDropdown('${groupName.replace(/'/g, "\\'")}', ${JSON.stringify(processPids)}, this.value)" onkeydown="event.stopPropagation(); handlePriorityKeydownDropdown(event, '${groupName.replace(/'/g, "\\'")}', ${JSON.stringify(processPids)}, this)">
+                            <button onclick="event.stopPropagation(); adjustGroupPriorityDropdown('${groupName.replace(/'/g, "\\'")}', ${JSON.stringify(processPids)}, 1, this)">+</button>
+                        </div>
+                    </div>
+                `;
+            }
 
             const button = event.currentTarget;
             const rect = button.getBoundingClientRect();
@@ -2687,7 +2779,7 @@
             }
         }
 
-        function handleGroupAction(action, pids, groupName) {
+        function handleGroupAction(action, pids, groupName, defaultNiceness = null) {
             console.log('Group Action:', action, 'PIDs:', pids, 'Group:', groupName);
             
             document.querySelectorAll('.dropdown-menu').forEach(menu => {
@@ -2696,13 +2788,8 @@
                 }
             });
 
-            const confirmMsg = `Are you sure you want to ${action} all ${pids.length} processes in group "${groupName}"?`;
-            if (!confirm(confirmMsg)) {
-                return;
-            }
-
-            if (action === 'priority') {
-                const nicenessValue = prompt("Enter nice value for all processes (-20 to 19):", "0");
+            if (action === 'niceness') {
+                const nicenessValue = defaultNiceness !== null ? defaultNiceness : prompt("Enter nice value for all processes (-20 to 19):", "0");
                 if (nicenessValue === null) return;
                 
                 const niceNum = parseInt(nicenessValue);
@@ -2711,22 +2798,53 @@
                     return;
                 }
                 
+                let successCount = 0;
+                let failCount = 0;
+                
                 pids.forEach(pid => {
                     ipcRenderer.send('process-action', {
-                        action: action,
+                        action: 'niceness',
                         pid: pid,
                         niceness: niceNum
                     });
+                    
+                    ipcRenderer.once(`process-action-result-${pid}`, (event, { success, error }) => {
+                        if (success) {
+                            successCount++;
+                        } else {
+                            failCount++;
+                            console.error(`Failed to set niceness for process ${pid}: ${error}`);
+                        }
+                        
+                        if (successCount + failCount === pids.length) {
+                            showGroupActionNotification(
+                                successCount > 0, 
+                                'niceness', 
+                                successCount, 
+                                groupName, 
+                                failCount
+                            );
+                            
+                            // Force a refresh of the process list
+                            ipcRenderer.send('refresh-processes');
+                            
+                            // Additional refresh after a short delay to ensure changes are reflected
+                            setTimeout(() => {
+                                ipcRenderer.send('refresh-processes');
+                            }, 500);
+                        }
+                    });
                 });
-                
-                showGroupActionNotification(true, action, pids.length, groupName);
+                return;
+            }
+
+            const confirmMsg = `Are you sure you want to ${action} all ${pids.length} processes in group "${groupName}"?`;
+            if (!confirm(confirmMsg)) {
                 return;
             }
             
             let successCount = 0;
             let failCount = 0;
-            
-            const notifications = [];
             
             pids.forEach((pid, index) => {
                 ipcRenderer.send('process-action', {
@@ -2822,6 +2940,161 @@
                 notification.style.animation = 'fadeOut 0.3s ease-out';
                 setTimeout(() => notification.remove(), 300);
             }, 2000);
+        }
+
+        function adjustGroupPriority(groupName, pids, delta) {
+            const input = event.target.parentElement.querySelector('input');
+            const currentValue = parseInt(input.value);
+            const newValue = Math.max(-20, Math.min(19, currentValue + delta));
+            input.value = newValue;
+            setGroupPriority(groupName, pids, newValue);
+        }
+
+        function setGroupPriority(groupName, pids, value) {
+            const niceNum = parseInt(value);
+            if (isNaN(niceNum) || niceNum < -20 || niceNum > 19) {
+                return;
+            }
+            
+            let successCount = 0;
+            let failCount = 0;
+            
+            pids.forEach(pid => {
+                ipcRenderer.send('process-action', {
+                    action: 'niceness',
+                    pid: pid,
+                    niceness: niceNum
+                });
+                
+                ipcRenderer.once(`process-action-result-${pid}`, (event, { success, error }) => {
+                    if (success) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                        console.error(`Failed to set niceness for process ${pid}: ${error}`);
+                    }
+                    
+                    if (successCount + failCount === pids.length) {
+                        showGroupActionNotification(
+                            successCount > 0, 
+                            'niceness', 
+                            successCount, 
+                            groupName, 
+                            failCount
+                        );
+                        
+                        ipcRenderer.send('refresh-processes');
+                    }
+                });
+            });
+        }
+
+        function handlePriorityKeydown(event, groupName, pids) {
+            if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                adjustGroupPriority(groupName, pids, 1);
+            } else if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                adjustGroupPriority(groupName, pids, -1);
+            }
+        }
+
+        function togglePriorityControl(groupId) {
+            const control = document.getElementById(`priority-control-${groupId}`);
+            if (control) {
+                control.classList.toggle('visible');
+                
+                // If we're showing the control, focus the input
+                if (control.classList.contains('visible')) {
+                    const input = control.querySelector('input');
+                    if (input) {
+                        input.focus();
+                    }
+                }
+            }
+        }
+
+        // Add click outside listener to hide priority controls
+        document.addEventListener('click', (event) => {
+            if (!event.target.closest('.priority-control') && !event.target.closest('.priority-button')) {
+                document.querySelectorAll('.priority-control.visible').forEach(control => {
+                    control.classList.remove('visible');
+                });
+            }
+        });
+
+        // Helper to get the most common priority in a group for default value
+        function groupPriors(pids) {
+            // This will be replaced at runtime, so just return 0 for now
+            return 0;
+        }
+
+        function toggleDropdownPriorityControl(item, groupId, pids, defaultValue) {
+            event.stopPropagation();
+            // Hide all other dropdown priority controls
+            document.querySelectorAll('.dropdown-menu .priority-control').forEach(ctrl => ctrl.classList.remove('visible'));
+            // Show this one
+            const control = document.getElementById(`dropdown-priority-control-${groupId}`);
+            if (control) {
+                control.classList.toggle('visible');
+                if (control.classList.contains('visible')) {
+                    const input = control.querySelector('input');
+                    if (input) {
+                        input.value = defaultValue;
+                        input.focus();
+                    }
+                }
+            }
+        }
+
+        function adjustGroupPriorityDropdown(groupName, pids, delta, btn) {
+            const input = btn.parentElement.querySelector('input');
+            const currentValue = parseInt(input.value);
+            const newValue = Math.max(-20, Math.min(19, currentValue + delta));
+            input.value = newValue;
+            setGroupPriorityDropdown(groupName, pids, newValue);
+        }
+        function setGroupPriorityDropdown(groupName, pids, value) {
+            const niceNum = parseInt(value);
+            if (isNaN(niceNum) || niceNum < -20 || niceNum > 19) {
+                return;
+            }
+            let successCount = 0;
+            let failCount = 0;
+            pids.forEach(pid => {
+                ipcRenderer.send('process-action', {
+                    action: 'niceness',
+                    pid: pid,
+                    niceness: niceNum
+                });
+                ipcRenderer.once(`process-action-result-${pid}`, (event, { success, error }) => {
+                    if (success) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                        console.error(`Failed to set niceness for process ${pid}: ${error}`);
+                    }
+                    if (successCount + failCount === pids.length) {
+                        showGroupActionNotification(
+                            successCount > 0, 
+                            'niceness', 
+                            successCount, 
+                            groupName, 
+                            failCount
+                        );
+                        ipcRenderer.send('refresh-processes');
+                    }
+                });
+            });
+        }
+        function handlePriorityKeydownDropdown(event, groupName, pids, input) {
+            if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                adjustGroupPriorityDropdown(groupName, pids, 1, input);
+            } else if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                adjustGroupPriorityDropdown(groupName, pids, -1, input);
+            }
         }
     </script>
 </body>
