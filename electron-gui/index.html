@@ -1776,7 +1776,8 @@
                 pid: pid
             });
             
-            ipcRenderer.once('process-action-result', (event, { success, error, action, pid }) => {
+            // Listen for the specific process action result
+            ipcRenderer.once(`process-action-result-${pid}`, (event, { success, error, action, pid }) => {
                 if (success) {
                     // Show a brief success message
                     const notification = document.createElement('div');
@@ -1789,7 +1790,12 @@
                     notification.style.borderRadius = '8px';
                     notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
                     notification.style.animation = 'fadeIn 0.3s ease-out';
-                    notification.innerHTML = `✅ Successfully ${action}ed process ${pid}`;
+                    
+                    let actionText = action === 'kill' ? 'terminated' : 
+                                     (action === 'pause' ? 'paused' : 
+                                     (action === 'resume' ? 'resumed' : 'updated'));
+                    
+                    notification.innerHTML = `✅ Successfully ${actionText} process ${pid}`;
                     
                     document.body.appendChild(notification);
                     setTimeout(() => {
@@ -1809,7 +1815,7 @@
                     notification.style.borderRadius = '8px';
                     notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
                     notification.style.animation = 'fadeIn 0.3s ease-out';
-                    notification.innerHTML = `❌ Permission denied. You can only change niceness for your own processes, and only decrease niceness as root.`;
+                    notification.innerHTML = `❌ Failed to ${action} process ${pid}: ${error}`;
                     
                     document.body.appendChild(notification);
                     setTimeout(() => {
@@ -2155,6 +2161,7 @@
                 const groupHeader = document.createElement('div');
                 groupHeader.className = 'group-header';
                 
+                // Create icon element with fallback to emoji
                 let iconHtml = '';
                 if (group.icon) {
                     iconHtml = `
@@ -2179,10 +2186,11 @@
                         CPU: ${group.totalCpu.toFixed(1)}% | 
                         Memory: ${formatBytes(group.totalMemory)}
                     </span>
+                    <button class="action-button group-action-button" onclick="showGroupActions(event, '${group.name.replace(/'/g, "\\'")}')">⋮</button>
                 `;
                 
                 const processTable = document.createElement('table');
-                processTable.className = 'process-table';
+                processTable.className = 'process-table group-process-table';
                 
                 if (groupingMethod === 'ppid') {
                     processTable.innerHTML = `
@@ -2197,7 +2205,6 @@
                                         <td>${process.cpu.toFixed(1)}%</td>
                                         <td>${formatBytes(process.memory)}</td>
                                         <td>${process.state}</td>
-                                        <td>${process.niceness !== undefined ? process.niceness : ''}</td>
                                         <td class="actions-cell">
                                             <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
                                         </td>
@@ -2216,7 +2223,6 @@
                                     <td>${process.cpu.toFixed(1)}%</td>
                                     <td>${formatBytes(process.memory)}</td>
                                     <td>${process.state}</td>
-                                    <td>${process.niceness !== undefined ? process.niceness : ''}</td>
                                     <td class="actions-cell">
                                         <button class="action-button" onclick="showActions(event, ${process.pid})">⋮</button>
                                     </td>
@@ -2230,7 +2236,7 @@
                 groupContainer.appendChild(processTable);
                 tbody.appendChild(groupContainer);
             });
-            
+            //css for ppid grouping
             if (groupingMethod === 'ppid' && !document.getElementById('ppid-group-styles')) {
                 const styleEl = document.createElement('style');
                 styleEl.id = 'ppid-group-styles';
@@ -2241,6 +2247,20 @@
                     }
                     .child-process {
                         padding-left: 10px;
+                    }
+                    .group-process-table {
+                        border-collapse: collapse;
+                        width: 100%;
+                    }
+                    .group-process-table td {
+                        padding: 8px 12px;
+                        border-bottom: 1px solid var(--border-color);
+                    }
+                    .group-process-table tr:last-child td {
+                        border-bottom: none;
+                    }
+                    .group-action-button {
+                        margin-left: 8px;
                     }
                 `;
                 document.head.appendChild(styleEl);
@@ -2305,6 +2325,162 @@
         }
 
         let ignoredIdlePIDs = new Set();
+
+
+        function showGroupActions(event, groupName) {
+            event.stopPropagation();
+            
+            const groupContainer = event.target.closest('.group-container');
+            const processPids = Array.from(groupContainer.querySelectorAll('.process-row'))
+                .map(row => parseInt(row.dataset.pid));
+            
+            if (processPids.length === 0) {
+                return;
+            }
+            
+            document.querySelectorAll('.dropdown-menu').forEach(menu => {
+                document.body.removeChild(menu);
+            });
+            
+            const dropdown = document.createElement('div');
+            dropdown.className = 'dropdown-menu group-dropdown';
+            dropdown.innerHTML = `
+                <div class="dropdown-item" onclick="handleGroupAction('kill', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
+                    ⚡ Kill All Processes (${processPids.length})
+                </div>
+                <div class="dropdown-item" onclick="handleGroupAction('pause', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
+                    ⏸️ Pause All Processes (${processPids.length})
+                </div>
+                <div class="dropdown-item" onclick="handleGroupAction('resume', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
+                    ▶️ Resume All Processes (${processPids.length})
+                </div>
+                <div class="dropdown-item" onclick="handleGroupAction('priority', ${JSON.stringify(processPids)}, '${groupName.replace(/'/g, "\\'")}')">
+                    ⚙️ Change Priority for All (${processPids.length})
+                </div>
+            `;
+
+            const button = event.currentTarget;
+            const rect = button.getBoundingClientRect();
+            
+            document.body.appendChild(dropdown);
+            
+            dropdown.style.display = 'block';
+            dropdown.style.left = `${rect.right + 5}px`;
+            dropdown.style.top = `${rect.top}px`;
+
+            const dropdownRect = dropdown.getBoundingClientRect();
+            if (dropdownRect.right > window.innerWidth) {
+                dropdown.style.left = `${rect.left - dropdownRect.width - 5}px`;
+            }
+            if (dropdownRect.bottom > window.innerHeight) {
+                dropdown.style.top = `${rect.bottom - dropdownRect.height}px`;
+            }
+        }
+
+        function handleGroupAction(action, pids, groupName) {
+            console.log('Group Action:', action, 'PIDs:', pids, 'Group:', groupName);
+            
+            document.querySelectorAll('.dropdown-menu').forEach(menu => {
+                if (document.body.contains(menu)) {
+                    document.body.removeChild(menu);
+                }
+            });
+
+            const confirmMsg = `Are you sure you want to ${action} all ${pids.length} processes in group "${groupName}"?`;
+            if (!confirm(confirmMsg)) {
+                return;
+            }
+
+            if (action === 'priority') {
+                const nicenessValue = prompt("Enter nice value for all processes (-20 to 19):", "0");
+                if (nicenessValue === null) return;
+                
+                const niceNum = parseInt(nicenessValue);
+                if (isNaN(niceNum) || niceNum < -20 || niceNum > 19) {
+                    alert("Invalid nice value. Must be between -20 and 19.");
+                    return;
+                }
+                
+                pids.forEach(pid => {
+                    ipcRenderer.send('process-action', {
+                        action: action,
+                        pid: pid,
+                        niceness: niceNum
+                    });
+                });
+                
+                showGroupActionNotification(true, action, pids.length, groupName);
+                return;
+            }
+            
+            let successCount = 0;
+            let failCount = 0;
+            
+            const notifications = [];
+            
+            pids.forEach((pid, index) => {
+                ipcRenderer.send('process-action', {
+                    action,
+                    pid: pid
+                });
+                
+                ipcRenderer.once(`process-action-result-${pid}`, (event, { success, error }) => {
+                    if (success) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                        console.error(`Failed to ${action} process ${pid}: ${error}`);
+                    }
+                    
+                    if (successCount + failCount === pids.length) {
+                        showGroupActionNotification(
+                            successCount > 0, 
+                            action, 
+                            successCount, 
+                            groupName, 
+                            failCount
+                        );
+                        
+                        ipcRenderer.send('refresh-processes');
+                    }
+                });
+            });
+        }
+
+        function showGroupActionNotification(success, action, count, groupName, failCount = 0) {
+            const notification = document.createElement('div');
+            notification.style.position = 'fixed';
+            notification.style.bottom = '20px';
+            notification.style.right = '20px';
+            notification.style.padding = '12px 20px';
+            notification.style.borderRadius = '8px';
+            notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+            notification.style.animation = 'fadeIn 0.3s ease-out';
+            
+            if (success) {
+                notification.style.backgroundColor = '#dcfce7';
+                notification.style.color = '#166534';
+                let actionText = action === 'kill' ? 'terminated' : 
+                                (action === 'pause' ? 'paused' : 
+                                (action === 'resume' ? 'resumed' : 'updated'));
+                
+                let message = `✅ Successfully ${actionText} ${count} processes in group "${groupName}"`;
+                if (failCount > 0) {
+                    message += ` (${failCount} failed)`;
+                }
+                notification.innerHTML = message;
+            } else {
+                notification.style.backgroundColor = '#fee2e2';
+                notification.style.color = '#991b1b';
+                notification.innerHTML = `❌ Failed to perform ${action} on processes in group "${groupName}"`;
+            }
+            
+            document.body.appendChild(notification);
+            setTimeout(() => {
+                notification.style.animation = 'fadeOut 0.3s ease-out';
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
     </script>
 </body>
 </html>
