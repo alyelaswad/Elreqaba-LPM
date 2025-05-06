@@ -399,6 +399,15 @@ app.whenReady().then(() => {
         });
     });
 
+    ipcMain.handle('check-process-exists', async (event, pid) => {
+        try {
+            await execPromise(`ps -p ${pid} -o pid=`);
+            return true;
+        } catch (error) {
+            return false;
+        }
+    });
+
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();

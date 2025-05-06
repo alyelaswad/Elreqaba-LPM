@@ -1980,10 +1980,14 @@
             'sshd', 'cupsd', 'cron', 'udevd', 'NetworkManager', 'wpa_supplicant',
             'bluetoothd', 'polkitd', 'X', 'gdm', 'lightdm', 'watchdog',
             'kernel', 'mds', 'mds_stores', 'WindowServer', 'dock', 'Finder',
+            'loginwindow', 'cfprefsd', 'secd', 'securityd', 'coreservicesd',
+            'mdworker', 'distnoted', 'notifyd', 'lsd', 'usbd', 'dasd',
+            'configd', 'opendirectoryd', 'powerd', 'tccd', 'locationd'
         ];
         const WHITELISTED_PROCESSES = [
             'terminal', 'iterm', 'finder', 'explorer', 'shell', 'bash', 'zsh',
             'spotlight', 'activity', 'siri', 'dock', 'menu', 'taskbar',
+            'console', 'taskmanager', 'windowmanager', 'xterm'
         ];
 
         function average(values) {
@@ -2000,18 +2004,33 @@
         }
 
         function isSystemProcess(process) {
+            // Check for critical system processes by PID
+            if (process.pid <= 10) return true;
+            
+            // Check by name
+            const lname = process.name.toLowerCase();
             return SYSTEM_PROCESSES.some(pattern => 
-                process.name.toLowerCase().includes(pattern.toLowerCase()) || 
+                lname.includes(pattern.toLowerCase()) || 
                 (process.command && process.command.toLowerCase().includes(pattern.toLowerCase())));
         }
 
         function isWhitelistedProcess(process) {
+            const lname = process.name.toLowerCase();
             return WHITELISTED_PROCESSES.some(pattern => 
-                process.name.toLowerCase().includes(pattern.toLowerCase()));
+                lname.includes(pattern.toLowerCase()));
         }
 
         function checkStarterApps(processes) {
             const now = Date.now();
+            const currentPids = new Set(processes.map(p => p.pid));
+            
+            // First, remove warnings for processes that no longer exist
+            document.querySelectorAll('.starter-app-warning').forEach(warning => {
+                const pid = parseInt(warning.getAttribute('data-pid'));
+                if (!currentPids.has(pid)) {
+                    removeWarning(warning);
+                }
+            });
             
             processes.forEach(process => {
                 if (!processHistory.has(process.pid)) {
@@ -2055,6 +2074,13 @@
                 }
             });
             
+            // Clean up process history for processes that no longer exist
+            processHistory.forEach((history, pid) => {
+                if (!currentPids.has(pid)) {
+                    processHistory.delete(pid);
+                }
+            });
+            
             // Reduce the process history retention for faster testing
             const MAX_PROCESS_AGE = 3 * 60 * 1000; // 3 minutes (reduced from 10 minutes)
             processHistory.forEach((history, pid) => {
@@ -2066,10 +2092,10 @@
             processes.forEach(process => {
                 if (ignoredIdlePIDs.has(process.pid)) {
                     return;
-                }                
-                // Exclude fewer system processes for testing
-                if (process.name.toLowerCase().includes('kernel') || 
-                    process.name.toLowerCase().includes('system')) {
+                }
+                
+                // Skip system processes and whitelisted processes
+                if (isSystemProcess(process) || isWhitelistedProcess(process)) {
                     return;
                 }
                 
@@ -2100,40 +2126,48 @@
                 return;
             }
 
-            const existingWarning = document.querySelector(`.starter-app-warning[data-pid="${pid}"]`);
-            if (existingWarning) {
-                existingWarning.remove();
-            }
-
-            let detailsText = '';
-            const history = processHistory.get(pid);
-            if (history) {
-                const avgCpuText = history.avgCpu.toFixed(1) + '%';
-                const currentCpuText = history.samples[history.samples.length - 1]?.cpu.toFixed(1) + '%' || 'N/A';
-                const idleTime = history.idleSince ? Math.floor((Date.now() - history.idleSince) / 1000) : 0;
+            // Check if process still exists in current process list
+            const { ipcRenderer } = require('electron');
+            ipcRenderer.invoke('check-process-exists', pid).then(exists => {
+                if (!exists) {
+                    return; // Don't show warning for processes that no longer exist
+                }
                 
-                detailsText = `
-                    <div class="warning-details">
-                        <p>Normal CPU: ${avgCpuText} | Current: ${currentCpuText} | Idle for: ${idleTime}s</p>
+                const existingWarning = document.querySelector(`.starter-app-warning[data-pid="${pid}"]`);
+                if (existingWarning) {
+                    existingWarning.remove();
+                }
+    
+                let detailsText = '';
+                const history = processHistory.get(pid);
+                if (history) {
+                    const avgCpuText = history.avgCpu.toFixed(1) + '%';
+                    const currentCpuText = history.samples[history.samples.length - 1]?.cpu.toFixed(1) + '%' || 'N/A';
+                    const idleTime = history.idleSince ? Math.floor((Date.now() - history.idleSince) / 1000) : 0;
+                    
+                    detailsText = `
+                        <div class="warning-details">
+                            <p>Normal CPU: ${avgCpuText} | Current: ${currentCpuText} | Idle for: ${idleTime}s</p>
+                        </div>
+                    `;
+                }
+    
+                const warning = document.createElement('div');
+                warning.className = 'starter-app-warning';
+                warning.setAttribute('data-pid', pid);
+                warning.innerHTML = `
+                    <div class="warning-header">
+                        ⚠️ ${name} (PID: ${pid}) appears to be idle 
+                    </div>
+                    ${detailsText}
+                    <div class="warning-actions">
+                        <button class="button button-primary" onclick="terminateStarterApp(${pid}, this)">Terminate</button>
+                        <button class="button button-secondary" onclick="removeWarning(this.closest('.starter-app-warning'))">Ignore</button>
+                        <button class="button button-secondary" onclick="ignoreProcessPermanently(${pid})">Always Ignore</button>
                     </div>
                 `;
-            }
-
-            const warning = document.createElement('div');
-            warning.className = 'starter-app-warning';
-            warning.setAttribute('data-pid', pid);
-            warning.innerHTML = `
-                <div class="warning-header">
-                    ⚠️ ${name} (PID: ${pid}) appears to be idle 
-                </div>
-                ${detailsText}
-                <div class="warning-actions">
-                    <button class="button button-primary" onclick="terminateStarterApp(${pid}, this)">Terminate</button>
-                    <button class="button button-secondary" onclick="removeWarning(this.closest('.starter-app-warning'))">Ignore</button>
-                    <button class="button button-secondary" onclick="ignoreProcessPermanently(${pid})">Always Ignore</button>
-                </div>
-            `;
-            document.getElementById('starterAppWarnings').appendChild(warning);
+                document.getElementById('starterAppWarnings').appendChild(warning);
+            });
         }
 
         function removeWarning(warningElement) {
@@ -2147,12 +2181,24 @@
             buttonElement.disabled = true;
             buttonElement.innerHTML = '⏳ Terminating...';
             
+            // First check if the process still exists
+            const exists = await ipcRenderer.invoke('check-process-exists', pid);
+            if (!exists) {
+                const warningElement = buttonElement.closest('.starter-app-warning');
+                warningElement.style.backgroundColor = '#dcfce7';
+                warningElement.innerHTML = '✅ Process already terminated';
+                setTimeout(() => {
+                    warningElement.remove();
+                }, 2000);
+                return;
+            }
+            
             ipcRenderer.send('process-action', {
                 action: 'kill',
                 pid: pid
             });
 
-            ipcRenderer.once('process-action-result', (event, { success, error }) => {
+            ipcRenderer.once(`process-action-result-${pid}`, (event, { success, error }) => {
                 const warningElement = buttonElement.closest('.starter-app-warning');
                 
                 if (success) {
