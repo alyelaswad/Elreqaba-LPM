@@ -55,7 +55,7 @@ A modern graphical interface with advanced features:
 - Group actions for multiple processes
 - Focus mode for high CPU usage processes
 
-[Placeholder for GUI Demo GIF]
+![GUI Demo](electron-gui/assets/output.gif)
 
 ## Installation
 
