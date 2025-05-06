@@ -633,12 +633,10 @@
             background-color: var(--bg-tertiary);
         }
 
-        /* Add a subtle divider between dropdown items */
         .dropdown-item:not(:last-child) {
             border-bottom: 1px solid var(--border-color);
         }
 
-        /* Add a subtle animation when showing the dropdown */
         @keyframes dropdownAppear {
             from {
                 opacity: 0;
@@ -655,12 +653,10 @@
             animation: dropdownAppear 0.2s ease;
         }
 
-        /* Ensure the dropdown is above everything when visible */
         .dropdown-menu[style*="display: block"] {
             z-index: 1000;
         }
 
-        /* Add styles for chart containers */
         .chart-container {
             background-color: var(--bg-primary);
             border: 1px solid var(--border-color);
@@ -722,9 +718,31 @@
             cursor: not-allowed;
         }
 
-        /* this will be used to hide the main table headers when in group mode */
         .grouped-mode thead {
             display: none;
+        }
+
+        .warning-header {
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        
+        .warning-details {
+            background-color: rgba(0, 0, 0, 0.05);
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin: 8px 0;
+            font-size: 0.9em;
+        }
+        
+        .warning-details p {
+            margin: 4px 0;
+        }
+        
+        .warning-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
         }
     </style>
 </head>
@@ -865,7 +883,7 @@
         let isFocusMode = false;
         let groupedProcesses = new Map();
         let starterAppTimers = new Map();
-        const STARTER_APP_TIMEOUT = 30000; // 30 seconds for testing (change to 1800000 for 30 minutes in production)
+        const STARTER_APP_TIMEOUT = 5000; // 5 seconds for testing (originally 30 seconds)
 
         // Define a color palette with distinct colors
         const DISTINCT_COLORS = [
@@ -1955,50 +1973,165 @@
             return iconMap.default;
         }
 
+        let processHistory = new Map();
+        const IDLE_DETECTION_WINDOW = 30000; 
+        const SYSTEM_PROCESSES = [
+            'systemd', 'init', 'kworker', 'kthread', 'avahi', 'dbus', 'launchd',
+            'sshd', 'cupsd', 'cron', 'udevd', 'NetworkManager', 'wpa_supplicant',
+            'bluetoothd', 'polkitd', 'X', 'gdm', 'lightdm', 'watchdog',
+            'kernel', 'mds', 'mds_stores', 'WindowServer', 'dock', 'Finder',
+        ];
+        const WHITELISTED_PROCESSES = [
+            'terminal', 'iterm', 'finder', 'explorer', 'shell', 'bash', 'zsh',
+            'spotlight', 'activity', 'siri', 'dock', 'menu', 'taskbar',
+        ];
+
+        function average(values) {
+            return values.reduce((sum, val) => sum + val, 0) / values.length;
+        }
+
+        function standardDeviation(values, avg) {
+            const squareDiffs = values.map(value => {
+                const diff = value - avg;
+                return diff * diff;
+            });
+            const avgSquareDiff = average(squareDiffs);
+            return Math.sqrt(avgSquareDiff);
+        }
+
+        function isSystemProcess(process) {
+            return SYSTEM_PROCESSES.some(pattern => 
+                process.name.toLowerCase().includes(pattern.toLowerCase()) || 
+                (process.command && process.command.toLowerCase().includes(pattern.toLowerCase())));
+        }
+
+        function isWhitelistedProcess(process) {
+            return WHITELISTED_PROCESSES.some(pattern => 
+                process.name.toLowerCase().includes(pattern.toLowerCase()));
+        }
+
         function checkStarterApps(processes) {
+            const now = Date.now();
+            
             processes.forEach(process => {
-                if (process.cpu < 0.1 && process.memory < 50 * 1024 * 1024) { // Less than 0.1% CPU and 50MB memory
-                    if (!starterAppTimers.has(process.pid)) {
-                        starterAppTimers.set(process.pid, {
-                            timestamp: Date.now(),
-                            name: process.name
-                        });
-                    }
-                } else {
-                    starterAppTimers.delete(process.pid);
+                if (!processHistory.has(process.pid)) {
+                    processHistory.set(process.pid, {
+                        samples: [],
+                        avgCpu: process.cpu,
+                        stdDevCpu: 0,
+                        avgMemory: process.memory,
+                        stdDevMemory: 0,
+                        lastSeen: now,
+                        idleSince: null,
+                        name: process.name,
+                        command: process.command
+                    });
+                }
+                
+                const history = processHistory.get(process.pid);
+                history.lastSeen = now;
+                history.name = process.name;
+                history.command = process.command;
+                
+                history.samples.push({
+                    cpu: process.cpu,
+                    memory: process.memory,
+                    timestamp: now
+                });
+                
+                // Reduce the history retention window for faster testing
+                const MAX_HISTORY_AGE = 1 * 60 * 1000; // 1 minute (reduced from 5 minutes)
+                history.samples = history.samples.filter(s => now - s.timestamp < MAX_HISTORY_AGE);
+                
+                // Reduce the required samples for faster detection
+                if (history.samples.length >= 3) { // Reduced from 5 to 3
+                    const cpuValues = history.samples.map(s => s.cpu);
+                    history.avgCpu = average(cpuValues);
+                    history.stdDevCpu = standardDeviation(cpuValues, history.avgCpu);
+                    
+                    const memValues = history.samples.map(s => s.memory);
+                    history.avgMemory = average(memValues);
+                    history.stdDevMemory = standardDeviation(memValues, history.avgMemory);
                 }
             });
-
-            // check for apps that have been inactive for the timeout period
-            const now = Date.now();
-            starterAppTimers.forEach((data, pid) => {
-                if (now - data.timestamp >= STARTER_APP_TIMEOUT) {
-                    showStarterAppWarning(pid, data.name);
-                    starterAppTimers.delete(pid);
+            
+            // Reduce the process history retention for faster testing
+            const MAX_PROCESS_AGE = 3 * 60 * 1000; // 3 minutes (reduced from 10 minutes)
+            processHistory.forEach((history, pid) => {
+                if (now - history.lastSeen > MAX_PROCESS_AGE) {
+                    processHistory.delete(pid);
+                }
+            });
+            
+            processes.forEach(process => {
+                if (ignoredIdlePIDs.has(process.pid)) {
+                    return;
+                }                
+                // Exclude fewer system processes for testing
+                if (process.name.toLowerCase().includes('kernel') || 
+                    process.name.toLowerCase().includes('system')) {
+                    return;
+                }
+                
+                const history = processHistory.get(process.pid);
+                if (!history || history.samples.length < 3) { // Reduced from 5 to 3
+                    return; // we do not have enough history to make a determination
+                }
+                
+                // Lower the threshold for what's considered a significant CPU user
+                if (history.avgCpu > 0.2) { // Reduced from 1.0 to 0.2 for testing
+                    // Make the idle detection more sensitive
+                    const isLowCpu = process.cpu < Math.max(0.1, history.avgCpu - history.stdDevCpu); // Reduced from 2*stdDev to 1*stdDev
+                    
+                    if (isLowCpu) {
+                        if (!history.idleSince) {
+                            history.idleSince = now;
+                        } else if (now - history.idleSince > 10000) { // Reduced from 30000 to 10000 (10 seconds)
+                            showStarterAppWarning(process.pid, process.name);
+                        }
+                    } else {
+                        history.idleSince = null;
+                    }
                 }
             });
         }
-
-        // Function to show starter app termination warning
         function showStarterAppWarning(pid, name) {
-            // Only show warning if we're on the processes tab
             if (!document.querySelector('.tab-content#processes').classList.contains('active')) {
                 return;
             }
 
-            // Remove any existing warning for this process
             const existingWarning = document.querySelector(`.starter-app-warning[data-pid="${pid}"]`);
             if (existingWarning) {
                 existingWarning.remove();
+            }
+
+            let detailsText = '';
+            const history = processHistory.get(pid);
+            if (history) {
+                const avgCpuText = history.avgCpu.toFixed(1) + '%';
+                const currentCpuText = history.samples[history.samples.length - 1]?.cpu.toFixed(1) + '%' || 'N/A';
+                const idleTime = history.idleSince ? Math.floor((Date.now() - history.idleSince) / 1000) : 0;
+                
+                detailsText = `
+                    <div class="warning-details">
+                        <p>Normal CPU: ${avgCpuText} | Current: ${currentCpuText} | Idle for: ${idleTime}s</p>
+                    </div>
+                `;
             }
 
             const warning = document.createElement('div');
             warning.className = 'starter-app-warning';
             warning.setAttribute('data-pid', pid);
             warning.innerHTML = `
-                ⚠️ ${name} (PID: ${pid}) has been inactive for a while. 
-                <button class="button button-primary" onclick="terminateStarterApp(${pid}, this)">Terminate</button>
-                <button class="button button-secondary" onclick="removeWarning(this.closest('.starter-app-warning'))">Ignore</button>
+                <div class="warning-header">
+                    ⚠️ ${name} (PID: ${pid}) appears to be idle 
+                </div>
+                ${detailsText}
+                <div class="warning-actions">
+                    <button class="button button-primary" onclick="terminateStarterApp(${pid}, this)">Terminate</button>
+                    <button class="button button-secondary" onclick="removeWarning(this.closest('.starter-app-warning'))">Ignore</button>
+                    <button class="button button-secondary" onclick="ignoreProcessPermanently(${pid})">Always Ignore</button>
+                </div>
             `;
             document.getElementById('starterAppWarnings').appendChild(warning);
         }
@@ -2480,6 +2613,38 @@
                 notification.style.animation = 'fadeOut 0.3s ease-out';
                 setTimeout(() => notification.remove(), 300);
             }, 3000);
+        }
+
+        function ignoreProcessPermanently(pid) { // this is for the idle detection
+            ignoredIdlePIDs.add(pid);
+            
+            const warningElement = document.querySelector(`.starter-app-warning[data-pid="${pid}"]`);
+            if (warningElement) {
+                removeWarning(warningElement);
+            }
+            
+            if (processHistory.has(pid)) {
+                const history = processHistory.get(pid);
+                history.idleSince = null;
+            }
+            
+            const notification = document.createElement('div');
+            notification.style.position = 'fixed';
+            notification.style.bottom = '20px';
+            notification.style.right = '20px';
+            notification.style.backgroundColor = '#dcfce7';
+            notification.style.color = '#166534';
+            notification.style.padding = '12px 20px';
+            notification.style.borderRadius = '8px';
+            notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+            notification.style.animation = 'fadeIn 0.3s ease-out';
+            notification.innerHTML = `✅ Process ${pid} will be ignored for idle detection`;
+            
+            document.body.appendChild(notification);
+            setTimeout(() => {
+                notification.style.animation = 'fadeOut 0.3s ease-out';
+                setTimeout(() => notification.remove(), 300);
+            }, 2000);
         }
     </script>
 </body>
