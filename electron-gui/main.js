@@ -46,13 +46,23 @@ async function getProcessCommand(pid) {
 }
 
 function createWindow() {
+    let iconPath;
+    if (process.platform === 'win32') {
+        iconPath = path.join(__dirname, 'assets/app-icon.ico');
+    } else if (process.platform === 'darwin') {
+        iconPath = path.join(__dirname, 'assets/app-icon.icns');
+    } else {
+        iconPath = path.join(__dirname, 'assets/app-icon.png');
+    }
+    
     mainWindow = new BrowserWindow({
         width: 1000,
         height: 700,
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false
-        }
+        },
+        icon: iconPath
     });
 
     mainWindow.loadFile('index.html');
@@ -350,6 +360,11 @@ async function handleProcessAction(action, pid, niceness) {
 }
 
 app.whenReady().then(() => {
+    app.name = "Elreqaba LPM";
+    if (process.platform === 'darwin') {
+        app.dock.setIcon(path.join(__dirname, 'assets/app-icon.png'));
+    }
+    
     createWindow();
 
     updateInterval = setInterval(async () => {

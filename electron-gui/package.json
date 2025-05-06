@@ -1,11 +1,11 @@
 {
-  "name": "electron-gui",
+  "name": "elreqaba-lpm",
   "version": "1.0.0",
-  "description": "Welcome GUI for Elreqaba",
+  "description": "Linux Process Monitor",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "electron-builder"
   },
   "keywords": [],
   "author": "",
@@ -18,5 +18,21 @@
   },
   "config": {
     "electron_mirror": "https://npmmirror.com/mirrors/electron/"
+  },
+  "build": {
+    "appId": "com.elreqaba.lpm",
+    "productName": "Elreqaba LPM",
+    "icon": "assets/app-icon.png",
+    "mac": {
+      "icon": "assets/app-icon.icns",
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "icon": "assets/app-icon.ico"
+    },
+    "linux": {
+      "icon": "assets/app-icon.png",
+      "category": "Utility"
+    }
   }
 }
