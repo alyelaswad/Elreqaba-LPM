@@ -607,17 +607,23 @@ fn get_keybindings_bar() -> StyledString {
 
     bar.append_plain("┃ ");
     bar.append(key("Exit <q>"));
-    bar.append_plain("  ");
-    bar.append(key("Pause/Unpause <u>"));
-    bar.append_plain("  ");
+    bar.append_plain("   ");
+    bar.append(key("Toggle Updates <u>"));
+    bar.append_plain("   ");
     bar.append(key("Process Tree <t>"));
-    bar.append_plain("  ");
+    bar.append_plain("   ");
     bar.append(key("Kill <k>"));
-    bar.append_plain("  ");
+    bar.append_plain("   ");
+    bar.append(key("Pause <P>"));
+    bar.append_plain("   ");
+    bar.append(key("Resume <R>"));
+    bar.append_plain("   ");
+    bar.append(key("System Info <S>"));
+    bar.append_plain("   ");
     bar.append(key("Filter <f>"));
-    bar.append_plain("  ");
+    bar.append_plain("   ");
     bar.append(key("Change Nice <n>"));
-    bar.append_plain("  ");
+    bar.append_plain("   ");
     bar.append(key("Help <h>"));
     bar.append_plain(" ┃");
 
@@ -781,14 +787,14 @@ pub fn display_tui(columns_to_display: Vec<String>, _initial_processes: Vec<Proc
 
     for col_name in columns_to_display {
         match col_name.as_str() {
-            "PID" => table = table.column(BasicColumn::PID, "PID", |c| c.align(HAlign::Right).width(6)),
-            "PPID" => table = table.column(BasicColumn::PPID, "PPID", |c| c.align(HAlign::Right).width(6)),
+            "PID" => table = table.column(BasicColumn::PID, "PID", |c| c.align(HAlign::Right).width(10)),
+            "PPID" => table = table.column(BasicColumn::PPID, "PPID", |c| c.align(HAlign::Right).width(10)),
             "USER" => table = table.column(BasicColumn::USER, "OWNER", |c| c.align(HAlign::Left).width(10)),
-            "CPU" => table = table.column(BasicColumn::CPU, "CPU %", |c| c.width(8).align(HAlign::Right)),
-            "MEM" => table = table.column(BasicColumn::MEM, "MEM %", |c| c.width(8).align(HAlign::Right)),
-            "NI" => table = table.column(BasicColumn::PRIORITY, "PRI", |c| c.align(HAlign::Right).width(4)),
+            "CPU" => table = table.column(BasicColumn::CPU, "CPU %", |c| c.width(10).align(HAlign::Right)),
+            "MEM" => table = table.column(BasicColumn::MEM, "MEM %", |c| c.width(10).align(HAlign::Right)),
+            "NI" => table = table.column(BasicColumn::PRIORITY, "PRI", |c| c.align(HAlign::Right).width(10)),
             "CMD" => table = table.column(BasicColumn::CMD, "CMD", |c| c.align(HAlign::Right).width(30)),
-            "START" => table = table.column(BasicColumn::START, "STARTED", |c| c.align(HAlign::Left).width(10)),
+            "START" => table = table.column(BasicColumn::START, "STARTED", |c| c.align(HAlign::Left).width(20)),
             "STATUS" => table = table.column(BasicColumn::STATUS, "STATE", |c| c.align(HAlign::Left).width(15)),
             _ => println!("Invalid column: {}", col_name),
         }
