@@ -721,6 +721,11 @@
             opacity: 0.7;
             cursor: not-allowed;
         }
+
+        /* this will be used to hide the main table headers when in group mode */
+        .grouped-mode thead {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -905,6 +910,11 @@
 
             checkStarterApps(processes);
 
+            const mainTable = document.querySelector('table.process-table');
+            if (mainTable) {
+                mainTable.classList.toggle('grouped-mode', isGrouped);
+            }
+            
             if (isGrouped) {
                 const groups = groupProcesses(processes);
                 renderGroupedProcesses(groups);
@@ -937,7 +947,7 @@
         }
 
         function normalizeProcessName(name) {
-            // Remove numbers and special characters, lowercase
+            // remove numbers and special characters, lowercase
             return name.replace(/[0-9]+/g, '').replace(/[^a-zA-Z]/g, '').toLowerCase();
         }
 
@@ -1823,6 +1833,12 @@
             const button = document.getElementById('groupButton');
             button.classList.toggle('button-primary');
             button.innerHTML = isGrouped ? '<span>📊</span> Ungroup' : '<span>📊</span> Group Processes';
+            
+            const mainTable = document.querySelector('table.process-table');
+            if (mainTable) {
+                mainTable.classList.toggle('grouped-mode', isGrouped);
+            }
+            
             ipcRenderer.send('refresh-processes');
         });
 
@@ -1856,7 +1872,7 @@
             controlsContainer.appendChild(selectorContainer);
         }
         
-        // Call this function on init
+        // to be called on init
         addGroupingMethodSelector();
 
         document.getElementById('focusModeButton').addEventListener('click', () => {
